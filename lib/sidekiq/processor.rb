@@ -30,24 +30,29 @@ module Sidekiq
       @boss = boss
     end
 
-    def process(msgstr, queue)
+    def process(work)
+      msgstr = work.message
+      queue = work.queue_name
       defer do
         begin
           msg = Sidekiq.load_json(msgstr)
           klass  = msg['class'].constantize
           worker = klass.new
+          worker.jid = msg['jid']
 
           stats(worker, msg, queue) do
             Sidekiq.server_middleware.invoke(worker, msg, queue) do
               worker.perform(*cloned(msg['args']))
             end
           end
-          rescue Exception => ex
-            handle_exception(ex, msg || { :message => msgstr })
+        rescue Exception => ex
+          handle_exception(ex, msg || { :message => msgstr })
           raise
+        ensure
+          work.acknowledge
         end
       end
-      @boss.processor_done!(current_actor)
+      @boss.async.processor_done(current_actor)
     end
 
     # See http://github.com/tarcieri/celluloid/issues/22
@@ -71,14 +76,13 @@ module Sidekiq
         end
       end
 
-      dying = false
       begin
         yield
       rescue Exception
-        dying = true
         redis do |conn|
           conn.multi do
             conn.incrby("stat:failed", 1)
+            conn.incrby("stat:failed:#{Time.now.utc.to_date}", 1)
           end
         end
         raise
@@ -89,6 +93,7 @@ module Sidekiq
             conn.del("worker:#{self}")
             conn.del("worker:#{self}:started")
             conn.incrby("stat:processed", 1)
+            conn.incrby("stat:processed:#{Time.now.utc.to_date}", 1)
           end
         end
       end

@@ -1,6 +1,170 @@
-HEAD
+Upcoming
 -----------
 
+- Provides ability to hook onto failure after max retries failed. [jkassemi, #780]
+- Delay on retry moved from constant proc to method call [lulalala, #784]
+- DSM V compatible symptom definition of developer frustration [colszowka, #782]
+- Fix bug in pagination link to last page [pitr, #774]
+- Upstart scripts for multiple Sidekiq instances [dariocravero, #763]
+- Use select via pipes instead of poll to catch signals [mrnugget, #761]
+
+2.8.0
+-----------
+
+- I18n support!  Sidekiq can optionally save and restore the Rails locale
+  so it will be properly set when your jobs execute.  Just include
+  `require 'sidekiq/middleware/i18n'` in your sidekiq initializer. [#750]
+- Fix bug which could lose messages when using namespaces and the message
+needs to be requeued in Redis. [#744]
+- Refactor Redis namespace support [#747].  The redis namespace can no longer be
+  passed via the config file, the only supported way is via Ruby in your
+  initializer:
+
+```ruby
+sidekiq_redis = { :url => 'redis://localhost:3679', :namespace => 'foo' }
+Sidekiq.configure_server { |config| config.redis = sidekiq_redis }
+Sidekiq.configure_client { |config| config.redis = sidekiq_redis }
+```
+
+A warning is printed out to the log if a namespace is found in your sidekiq.yml.
+
+
+2.7.5
+-----------
+
+- Capistrano no longer uses daemonization in order to work with JRuby [#719]
+- Refactor signal handling to work on Ruby 2.0 [#728, #730]
+- Fix dashboard refresh URL [#732]
+
+2.7.4
+-----------
+
+- Fixed daemonization, was broken by some internal refactoring in 2.7.3 [#727]
+
+2.7.3
+-----------
+
+- Real-time dashboard is now the default web page
+- Make config file optional for capistrano
+- Fix Retry All button in the Web UI
+
+2.7.2
+-----------
+
+- Remove gem signing infrastructure.  It was causing Sidekiq to break
+when used via git in Bundler.  This is why we can't have nice things. [#688]
+
+
+2.7.1
+-----------
+
+- Fix issue with hard shutdown [#680]
+
+
+2.7.0
+-----------
+
+- Add -d daemonize flag, capistrano recipe has been updated to use it [#662]
+- Support profiling via `ruby-prof` with -p.  When Sidekiq is stopped
+  via Ctrl-C, it will output `profile.html`.  You must add `gem 'ruby-prof'` to your Gemfile for it to work.
+- Dynamically update Redis stats on dashboard [brandonhilkert]
+- Add Sidekiq::Workers API giving programmatic access to the current
+  set of active workers.
+
+```
+workers = Sidekiq::Workers.new
+workers.size => 2
+workers.each do |name, work|
+  # name is a unique identifier per Processor instance
+  # work is a Hash which looks like:
+  # { 'queue' => name, 'run_at' => timestamp, 'payload' => msg }
+end
+```
+
+- Allow environment-specific sections within the config file which
+override the global values [dtaniwaki, #630]
+
+```
+---
+:concurrency:  50
+:verbose:      false
+staging:
+  :verbose:      true
+  :concurrency:  5
+```
+
+
+2.6.5
+-----------
+
+- Several reliability fixes for job requeueing upon termination [apinstein, #622, #624]
+- Fix typo in capistrano recipe
+- Add `retry_queue` option so retries can be given lower priority [ryanlower, #620]
+
+```ruby
+sidekiq_options queue: 'high', retry_queue: 'low'
+```
+
+2.6.4
+-----------
+
+- Fix crash upon empty queue [#612]
+
+2.6.3
+-----------
+
+- sidekiqctl exits with non-zero exit code upon error [jmazzi]
+- better argument validation in Sidekiq::Client [karlfreeman]
+
+2.6.2
+-----------
+
+- Add Dashboard beacon indicating when stats are updated. [brandonhilkert, #606]
+- Revert issue with capistrano restart. [#598]
+
+2.6.1
+-----------
+
+- Dashboard now live updates summary stats also. [brandonhilkert, #605]
+- Add middleware chain APIs `insert_before` and `insert_after` for fine
+  tuning the order of middleware. [jackrg, #595]
+
+2.6.0
+-----------
+
+- Web UI much more mobile friendly now [brandonhilkert, #573]
+- Enable live polling for every section in Web UI [brandonhilkert, #567]
+- Add Stats API [brandonhilkert, #565]
+- Add Stats::History API [brandonhilkert, #570]
+- Add Dashboard to Web UI with live and historical stat graphs [brandonhilkert, #580]
+- Add option to log output to a file, reopen log file on USR2 signal [mrnugget, #581]
+
+2.5.4
+-----------
+
+- `Sidekiq::Client.push` now accepts the worker class as a string so the
+  Sidekiq client does not have to load your worker classes at all.  [#524]
+- `Sidekiq::Client.push_bulk` now works with inline testing.
+- **Really** fix status icon in Web UI this time.
+- Add "Delete All" and "Retry All" buttons to Retries in Web UI
+
+
+2.5.3
+-----------
+
+- Small Web UI fixes
+- Add `delay_until` so you can delay jobs until a specific timestamp:
+
+```ruby
+Auction.delay_until(@auction.ends_at).close(@auction.id)
+```
+
+This is identical to the existing Sidekiq::Worker method, `perform_at`.
+
+2.5.2
+-----------
+
+- Remove asset pipeline from Web UI for much faster, simpler runtime.  [#499, #490, #481]
 - Add -g option so the procline better identifies a Sidekiq process, defaults to File.basename(Rails.root). [#486]
 
     sidekiq 2.5.1 myapp [0 of 25 busy]

@@ -1,8 +1,11 @@
 Sidekiq
 ==============
 
-[![Build Status](https://secure.travis-ci.org/mperham/sidekiq.png)](http://travis-ci.org/mperham/sidekiq)
-[![Dependency Status](https://gemnasium.com/mperham/sidekiq.png)](https://gemnasium.com/mperham/sidekiq)
+  - [![Gem Version](https://badge.fury.io/rb/sidekiq.png)](https://rubygems.org/gems/sidekiq)
+  - [![Code Climate](https://codeclimate.com/github/mperham/sidekiq.png)](https://codeclimate.com/github/mperham/sidekiq)
+  - [![Build Status](https://travis-ci.org/mperham/sidekiq.png)](https://travis-ci.org/mperham/sidekiq)
+  - [![Coverage Status](https://coveralls.io/repos/mperham/sidekiq/badge.png?branch=master)](https://coveralls.io/r/mperham/sidekiq)
+
 
 Simple, efficient message processing for Ruby.
 
@@ -43,7 +46,10 @@ Getting Started
 -----------------
 
 See the [sidekiq home page](http://mperham.github.com/sidekiq) for the simple 4-step process.
-You can watch [Railscast #366](http://railscasts.com/episodes/366-sidekiq) to see Sidekiq in action.
+You can watch [Railscast #366](http://railscasts.com/episodes/366-sidekiq) to see Sidekiq in action.  If you do everything right, you should see this: 
+
+![Web UI](https://github.com/mperham/sidekiq/raw/master/examples/web-ui.png)
+
 
 
 More Information
@@ -54,7 +60,7 @@ Please see the [sidekiq wiki](https://github.com/mperham/sidekiq/wiki) for more 
 but bug reports or feature requests suggestions should still go through [issues on Github](https://github.com/mperham/sidekiq/issues).
 
 There's also a mailing list via [Librelist](http://librelist.org) that you can subscribe to by sending
-and email to <sidekiq@librelist.org> with a greeting in the body. To unsubscribe, send an email to <sidekiq-unsubscribe@librelist.org> and that's it!
+an email to <sidekiq@librelist.org> with a greeting in the body. To unsubscribe, send an email to <sidekiq-unsubscribe@librelist.org> and that's it!
 Once archiving begins, you'll be able to visit [the archives](http://librelist.com/browser/sidekiq/) to see past threads.
 
 
@@ -63,7 +69,7 @@ Problems?
 
 **Please do not directly email any Sidekiq committers with questions or problems.**  A community is best served when discussions are held in public.
 
-If you have a problem, please review the [FAQ](/mperham/sidekiq/wiki/FAQ) and [Troubleshooting](/mperham/sidekiq/wiki/Problems-and-Troubleshooting) wiki pages. Searching the issues for your problem is also a good idea.  If that doesn't help, feel free to email the Sidekiq mailing list or open a new issue.
+If you have a problem, please review the [FAQ](https://github.com/mperham/sidekiq/wiki/FAQ) and [Troubleshooting](https://github.com/mperham/sidekiq/wiki/Problems-and-Troubleshooting) wiki pages. Searching the issues for your problem is also a good idea.  If that doesn't help, feel free to email the Sidekiq mailing list or open a new issue.
 The mailing list is the preferred place to ask questions on usage. If you are encountering what you think is a bug, please open an issue.
 
 

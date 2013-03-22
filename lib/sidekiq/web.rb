@@ -34,28 +34,8 @@ module Sidekiq
         end
       end
 
-      def info
-        @info ||= Sidekiq.info
-      end
-
-      def processed
-        info[:processed]
-      end
-
-      def failed
-        info[:failed]
-      end
-
-      def zcard(name)
-        Sidekiq.redis { |conn| conn.zcard(name) }
-      end
-
-      def queues
-        @queues ||= Sidekiq.info[:queues_with_sizes]
-      end
-
-      def backlog
-        info[:backlog]
+      def stats
+        @stats ||= Sidekiq::Stats.new
       end
 
       def retries_with_score(score)
@@ -67,6 +47,10 @@ module Sidekiq
 
       def location
         Sidekiq.redis { |conn| conn.client.location }
+      end
+
+      def namespace
+        @@ns ||= Sidekiq.redis {|conn| conn.respond_to?(:namespace) ? conn.namespace : nil }
       end
 
       def root_path
@@ -84,6 +68,15 @@ module Sidekiq
 
       def relative_time(time)
         %{<time datetime="#{time.getutc.iso8601}">#{time}</time>}
+      end
+
+      def job_params(job, score)
+        "#{score}-#{job['jid']}"
+      end
+
+      def parse_params(params)
+        score, jid = params.split("-")
+        [score.to_f, jid]
       end
 
       def display_args(args, count=100)
@@ -106,18 +99,18 @@ module Sidekiq
         parts[0].gsub!(/(\d)(?=(\d\d\d)+(?!\d))/, "\\1#{options[:delimiter]}")
         parts.join(options[:separator])
       end
+
+      def redis_keys
+        ["redis_stats", "uptime_in_days", "connected_clients", "used_memory_human", "used_memory_peak_human"]
+      end
     end
 
-    get "/" do
+    get "/workers" do
       slim :index
     end
 
-    get "/poll" do
-      slim :poll, layout: false
-    end
-
     get "/queues" do
-      @queues = queues
+      @queues = Sidekiq::Stats.new.queues
       slim :queues
     end
 
@@ -136,26 +129,13 @@ module Sidekiq
     end
 
     post "/queues/:name" do
-      Sidekiq.redis do |conn|
-        conn.del("queue:#{params[:name]}")
-        conn.srem("queues", params[:name])
-      end
+      Sidekiq::Queue.new(params[:name]).clear
       redirect "#{root_path}queues"
     end
 
     post "/queues/:name/delete" do
-      Sidekiq.redis do |conn|
-        conn.lrem("queue:#{params[:name]}", 0, params[:key_val])
-      end
+      Sidekiq::Job.new(params[:key_val], params[:name]).delete
       redirect "#{root_path}queues/#{params[:name]}"
-    end
-
-    get "/retries/:score" do
-      halt 404 unless params[:score]
-      @score = params[:score].to_f
-      @retries = retries_with_score(@score)
-      redirect "#{root_path}retries" if @retries.empty?
-      slim :retry
     end
 
     get '/retries' do
@@ -163,6 +143,48 @@ module Sidekiq
       (@current_page, @total_size, @retries) = page("retry", params[:page], @count)
       @retries = @retries.map {|msg, score| [Sidekiq.load_json(msg), score] }
       slim :retries
+    end
+
+    get "/retries/:key" do
+      halt 404 unless params['key']
+      @retry = Sidekiq::RetrySet.new.fetch(*parse_params(params['key'])).first
+      redirect "#{root_path}retries" if @retry.nil?
+      slim :retry
+    end
+
+    post '/retries' do
+      halt 404 unless params['key']
+
+      params['key'].each do |key|
+        job = Sidekiq::RetrySet.new.fetch(*parse_params(key)).first
+        if params['retry']
+          job.retry
+        elsif params['delete']
+          job.delete
+        end
+      end
+      redirect "#{root_path}retries"
+    end
+
+    post "/retries/all/delete" do
+      Sidekiq::RetrySet.new.clear
+      redirect "#{root_path}retries"
+    end
+
+    post "/retries/all/retry" do
+      Sidekiq::RetrySet.new.retry_all
+      redirect "#{root_path}retries"
+    end
+
+    post "/retries/:key" do
+      halt 404 unless params['key']
+      job = Sidekiq::RetrySet.new.fetch(*parse_params(params['key'])).first
+      if params['retry']
+        job.retry
+      elsif params['delete']
+        job.delete
+      end
+      redirect "#{root_path}retries"
     end
 
     get '/scheduled' do
@@ -173,64 +195,47 @@ module Sidekiq
     end
 
     post '/scheduled' do
-      halt 404 unless params[:score]
+      halt 404 unless params['key']
       halt 404 unless params['delete']
-      params[:score].each do |score|
-        s = score.to_f
-        process_score('schedule', s, :delete)
+      params['key'].each do |key|
+        Sidekiq::ScheduledSet.new.fetch(*parse_params(key)).first.delete
       end
       redirect "#{root_path}scheduled"
     end
 
-    post '/retries' do
-      halt 404 unless params[:score]
-      params[:score].each do |score|
-        s = score.to_f
-        if params['retry']
-          process_score('retry', s, :retry)
-        elsif params['delete']
-          process_score('retry', s, :delete)
-        end
-      end
-      redirect "#{root_path}retries"
+    get '/' do
+      @redis_info = Sidekiq.redis { |conn| conn.info }.select{ |k, v| redis_keys.include? k }
+      stats_history = Sidekiq::Stats::History.new((params[:days] || 30).to_i)
+      @processed_history = stats_history.processed
+      @failed_history = stats_history.failed
+      slim :dashboard
     end
 
-    post "/retries/:score" do
-      halt 404 unless params[:score]
-      score = params[:score].to_f
-      if params['retry']
-        process_score('retry', score, :retry)
-      elsif params['delete']
-        process_score('retry', score, :delete)
-      end
-      redirect "#{root_path}retries"
-    end
+    get '/dashboard/stats' do
+      sidekiq_stats = Sidekiq::Stats.new
+      redis_stats   = Sidekiq.redis { |conn| conn.info }.select{ |k, v| redis_keys.include? k }
 
-    def process_score(set, score, operation)
-      case operation
-      when :retry
-        Sidekiq.redis do |conn|
-          results = conn.zrangebyscore(set, score, score)
-          conn.zremrangebyscore(set, score, score)
-          results.map do |message|
-            msg = Sidekiq.load_json(message)
-            msg['retry_count'] = msg['retry_count'] - 1
-            conn.rpush("queue:#{msg['queue']}", Sidekiq.dump_json(msg))
-          end
-        end
-      when :delete
-        Sidekiq.redis do |conn|
-          conn.zremrangebyscore(set, score, score)
-        end
-      end
+      content_type :json
+      Sidekiq.dump_json({
+        sidekiq: {
+          processed:  sidekiq_stats.processed,
+          failed:     sidekiq_stats.failed,
+          busy:       workers.size,
+          enqueued:   sidekiq_stats.enqueued,
+          scheduled:  sidekiq_stats.scheduled_size,
+          retries:    sidekiq_stats.retry_size,
+        },
+        redis: redis_stats
+      })
     end
 
     def self.tabs
       @tabs ||= {
-        "Workers"   =>'',
-        "Queues"    =>'queues',
-        "Retries"   =>'retries',
-        "Scheduled" =>'scheduled'
+        "Dashboard" => '',
+        "Workers"   => 'workers',
+        "Queues"    => 'queues',
+        "Retries"   => 'retries',
+        "Scheduled" => 'scheduled',
       }
     end
 

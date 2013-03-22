@@ -21,6 +21,8 @@ module Sidekiq
   #
   # Note that perform_async is a class method, perform is an instance method.
   module Worker
+    attr_accessor :jid
+
     def self.included(base)
       base.extend(ClassMethods)
       base.class_attribute :sidekiq_options_hash

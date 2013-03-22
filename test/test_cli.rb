@@ -40,6 +40,11 @@ class TestCli < MiniTest::Unit::TestCase
       assert_equal ['foo'], Sidekiq.options[:queues]
     end
 
+    it 'accepts a process index' do
+      @cli.parse(['sidekiq', '-i', '7', '-r', './test/fake_env.rb'])
+      assert_equal 7, Sidekiq.options[:index]
+    end
+
     it 'sets strictly ordered queues if weights are not present' do
       @cli.parse(['sidekiq', '-q', 'foo,bar', '-r', './test/fake_env.rb'])
       assert_equal true, !!Sidekiq.options[:strict]
@@ -80,7 +85,49 @@ class TestCli < MiniTest::Unit::TestCase
       @cli.parse(['sidekiq', '-v', '-r', './test/fake_env.rb'])
       assert_equal Logger::DEBUG, Sidekiq.logger.level
       # If we leave the logger at DEBUG it'll add a lot of noise to the test output
+      Sidekiq.options.delete(:verbose)
       Sidekiq.logger.level = old
+    end
+
+    describe 'with logfile' do
+      before do
+        @old_logger = Sidekiq.logger
+        @tmp_log_path = '/tmp/sidekiq.log'
+      end
+
+      after do
+        Sidekiq.logger = @old_logger
+        Sidekiq.options.delete(:logfile)
+        File.unlink @tmp_log_path if File.exists?(@tmp_log_path)
+      end
+
+      it 'sets the logfile path' do
+        @cli.parse(['sidekiq', '-L', @tmp_log_path, '-r', './test/fake_env.rb'])
+
+        assert_equal @tmp_log_path, Sidekiq.options[:logfile]
+      end
+
+      it 'creates and writes to a logfile' do
+        @cli.parse(['sidekiq', '-L', @tmp_log_path, '-r', './test/fake_env.rb'])
+
+        Sidekiq.logger.info('test message')
+
+        assert_match(/test message/, File.read(@tmp_log_path), "didn't include the log message")
+      end
+
+      it 'appends messages to a logfile' do
+        File.open(@tmp_log_path, 'w') do |f|
+          f.puts 'already existant log message'
+        end
+
+        @cli.parse(['sidekiq', '-L', @tmp_log_path, '-r', './test/fake_env.rb'])
+
+        Sidekiq.logger.info('test message')
+
+        log_file_content = File.read(@tmp_log_path)
+        assert_match(/already existant/, log_file_content, "didn't include the old message")
+        assert_match(/test message/, log_file_content, "didn't include the new message")
+      end
     end
 
     describe 'with pidfile' do
@@ -132,6 +179,49 @@ class TestCli < MiniTest::Unit::TestCase
 
       it 'sets pid file' do
         assert_equal '/tmp/sidekiq-config-test.pid', Sidekiq.options[:pidfile]
+      end
+
+      it 'sets logfile' do
+        assert_equal '/tmp/sidekiq.log', Sidekiq.options[:logfile]
+      end
+
+      it 'sets queues' do
+        assert_equal 2, Sidekiq.options[:queues].count { |q| q == 'very_often' }
+        assert_equal 1, Sidekiq.options[:queues].count { |q| q == 'seldom' }
+      end
+    end
+
+    describe 'with env based config file' do
+      before do
+        @cli.parse(['sidekiq', '-e', 'staging', '-C', './test/env_based_config.yml'])
+      end
+
+      it 'takes a path' do
+        assert_equal './test/env_based_config.yml', Sidekiq.options[:config_file]
+      end
+
+      it 'sets verbose' do
+        refute Sidekiq.options[:verbose]
+      end
+
+      it 'sets require file' do
+        assert_equal './test/fake_env.rb', Sidekiq.options[:require]
+      end
+
+      it 'sets environment' do
+        assert_equal 'staging', Sidekiq.options[:environment]
+      end
+
+      it 'sets concurrency' do
+        assert_equal 5, Sidekiq.options[:concurrency]
+      end
+
+      it 'sets pid file' do
+        assert_equal '/tmp/sidekiq-config-test.pid', Sidekiq.options[:pidfile]
+      end
+
+      it 'sets logfile' do
+        assert_equal '/tmp/sidekiq.log', Sidekiq.options[:logfile]
       end
 
       it 'sets queues' do
@@ -191,9 +281,29 @@ class TestCli < MiniTest::Unit::TestCase
 
     describe 'Sidekiq::CLI#parse_queues' do
       describe 'when weight is present' do
+        it 'concatenates queues by factor of weight and sets strict to false' do
+          opts = {}
+          @cli.send :parse_queues, opts, [['often', 7]]
+          assert_equal %w[often] * 7, opts[:queues]
+          assert !opts[:strict]
+        end
+      end
+
+      describe 'when weight is not present' do
+        it 'returns queues and sets strict' do
+          opts = {}
+          @cli.send :parse_queues, opts, [['once']]
+          assert_equal %w[once], opts[:queues]
+          assert opts[:strict]
+        end
+      end
+    end
+
+    describe 'Sidekiq::CLI#parse_queue' do
+      describe 'when weight is present' do
         it 'concatenates queue to opts[:queues] weight number of times' do
           opts = {}
-          @cli.send :parse_queues, opts, 'often', 7
+          @cli.send :parse_queue, opts, 'often', 7
           assert_equal %w[often] * 7, opts[:queues]
         end
       end
@@ -201,7 +311,7 @@ class TestCli < MiniTest::Unit::TestCase
       describe 'when weight is not present' do
         it 'concatenates queue to opts[:queues] once' do
           opts = {}
-          @cli.send :parse_queues, opts, 'once', nil
+          @cli.send :parse_queue, opts, 'once', nil
           assert_equal %w[once], opts[:queues]
         end
       end

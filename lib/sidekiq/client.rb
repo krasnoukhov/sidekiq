@@ -6,7 +6,7 @@ module Sidekiq
   class Client
 
     def self.default_middleware
-      Middleware::Chain.new do |m|
+      Middleware::Chain.new do
       end
     end
 
@@ -64,14 +64,7 @@ module Sidekiq
         payload
       end.compact
 
-      pushed = false
-      Sidekiq.redis do |conn|
-        _, pushed = conn.multi do
-          conn.sadd('queues', normed['queue'])
-          conn.rpush("queue:#{normed['queue']}", payloads)
-        end
-      end
-
+      pushed = raw_push(normed, payloads)
       pushed ? payloads.size : nil
     end
 
@@ -98,12 +91,14 @@ module Sidekiq
     def self.raw_push(normed, payload) # :nodoc:
       pushed = false
       Sidekiq.redis do |conn|
-        if normed['at']
+        if normed['at'] && payload.is_a?(Array)
+          pushed = conn.zadd('schedule', payload.map {|hash| [normed['at'].to_s, hash]})
+        elsif normed['at']
           pushed = conn.zadd('schedule', normed['at'].to_s, payload)
         else
           _, pushed = conn.multi do
             conn.sadd('queues', normed['queue'])
-            conn.rpush("queue:#{normed['queue']}", payload)
+            conn.lpush("queue:#{normed['queue']}", payload)
           end
         end
       end
@@ -122,13 +117,18 @@ module Sidekiq
     def self.normalize_item(item)
       raise(ArgumentError, "Message must be a Hash of the form: { 'class' => SomeWorker, 'args' => ['bob', 1, :foo => 'bar'] }") unless item.is_a?(Hash)
       raise(ArgumentError, "Message must include a class and set of arguments: #{item.inspect}") if !item['class'] || !item['args']
-      raise(ArgumentError, "Message must include a Sidekiq::Worker class, not class name: #{item['class'].ancestors.inspect}") if !item['class'].is_a?(Class) || !item['class'].respond_to?('get_sidekiq_options')
+      raise(ArgumentError, "Message args must be an Array") unless item['args'].is_a?(Array)
+      raise(ArgumentError, "Message class must be either a Class or String representation of the class name") unless item['class'].is_a?(Class) || item['class'].is_a?(String)
 
-      normalized_item = item['class'].get_sidekiq_options.merge(item.dup)
-      normalized_item['class'] = normalized_item['class'].to_s
-      normalized_item['retry'] = !!normalized_item['retry']
+      if item['class'].is_a?(Class)
+        raise(ArgumentError, "Message must include a Sidekiq::Worker class, not class name: #{item['class'].ancestors.inspect}") if !item['class'].respond_to?('get_sidekiq_options')
+        normalized_item = item['class'].get_sidekiq_options.merge(item)
+        normalized_item['class'] = normalized_item['class'].to_s
+      else
+        normalized_item = Sidekiq::Worker::ClassMethods::DEFAULT_OPTIONS.merge(item)
+      end
+
       normalized_item['jid'] = SecureRandom.hex(12)
-
       normalized_item
     end
 

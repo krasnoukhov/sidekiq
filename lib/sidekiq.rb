@@ -1,10 +1,10 @@
+# encoding: utf-8
 require 'sidekiq/version'
 require 'sidekiq/logging'
 require 'sidekiq/client'
 require 'sidekiq/worker'
 require 'sidekiq/redis_connection'
 require 'sidekiq/util'
-require 'sidekiq/stats'
 require 'sidekiq/api'
 
 require 'sidekiq/extensions/class_methods'
@@ -24,7 +24,12 @@ module Sidekiq
     :require => '.',
     :environment => nil,
     :timeout => 8,
+    :profile => false,
   }
+
+  def self.❨╯°□°❩╯︵┻━┻
+    puts "Calm down, bro"
+  end
 
   def self.options
     @options ||= DEFAULTS.dup
@@ -62,8 +67,8 @@ module Sidekiq
   end
 
   def self.redis(&block)
-    @redis ||= Sidekiq::RedisConnection.create
     raise ArgumentError, "requires a block" if !block
+    @redis ||= Sidekiq::RedisConnection.create
     @redis.with(&block)
   end
 
@@ -90,7 +95,7 @@ module Sidekiq
   end
 
   def self.load_json(string)
-    MultiJson.decode(string)
+    MultiJson.decode(string, :symbolize_keys => false)
   end
 
   def self.dump_json(object)
@@ -107,6 +112,18 @@ module Sidekiq
 
   def self.poll_interval=(interval)
     self.options[:poll_interval] = interval
+  end
+
+  ##
+  # deprecated
+  def self.size(*queues)
+    return Sidekiq::Stats.new.enqueued if queues.empty?
+
+    Sidekiq.redis { |conn|
+      conn.multi {
+        queues.map { |q| conn.llen("queue:#{q}") }
+      }
+    }.inject(0) { |memo, count| memo + count }
   end
 
 end
