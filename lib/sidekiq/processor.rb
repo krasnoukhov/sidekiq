@@ -15,8 +15,6 @@ module Sidekiq
     include Util
     include Celluloid
 
-#    exclusive :process
-
     def self.default_middleware
       Middleware::Chain.new do |m|
         m.add Middleware::Server::Logging
@@ -26,6 +24,11 @@ module Sidekiq
       end
     end
 
+    # store the actual working thread so we
+    # can later kill if it necessary during
+    # hard shutdown.
+    attr_accessor :actual_work_thread
+
     def initialize(boss)
       @boss = boss
     end
@@ -34,6 +37,7 @@ module Sidekiq
       msgstr = work.message
       queue = work.queue_name
       defer do
+        @actual_work_thread = Thread.current
         begin
           msg = Sidekiq.load_json(msgstr)
           klass  = msg['class'].constantize
@@ -45,6 +49,9 @@ module Sidekiq
               worker.perform(*cloned(msg['args']))
             end
           end
+        rescue Sidekiq::Shutdown
+          # Had to force kill this job because it didn't finish
+          # within the timeout.
         rescue Exception => ex
           handle_exception(ex, msg || { :message => msgstr })
           raise
@@ -60,19 +67,19 @@ module Sidekiq
       "#<Processor #{to_s}>"
     end
 
-    def to_s
+    private
+
+    def identity
       @str ||= "#{hostname}:#{process_id}-#{Thread.current.object_id}:default"
     end
-
-    private
 
     def stats(worker, msg, queue)
       redis do |conn|
         conn.multi do
-          conn.sadd('workers', self)
-          conn.setex("worker:#{self}:started", EXPIRY, Time.now.to_s)
+          conn.sadd('workers', identity)
+          conn.setex("worker:#{identity}:started", EXPIRY, Time.now.to_s)
           hash = {:queue => queue, :payload => msg, :run_at => Time.now.to_i }
-          conn.setex("worker:#{self}", EXPIRY, Sidekiq.dump_json(hash))
+          conn.setex("worker:#{identity}", EXPIRY, Sidekiq.dump_json(hash))
         end
       end
 
@@ -89,9 +96,9 @@ module Sidekiq
       ensure
         redis do |conn|
           conn.multi do
-            conn.srem("workers", self)
-            conn.del("worker:#{self}")
-            conn.del("worker:#{self}:started")
+            conn.srem("workers", identity)
+            conn.del("worker:#{identity}")
+            conn.del("worker:#{identity}:started")
             conn.incrby("stat:processed", 1)
             conn.incrby("stat:processed:#{Time.now.utc.to_date}", 1)
           end

@@ -68,15 +68,15 @@ module Sidekiq
 
   def self.redis(&block)
     raise ArgumentError, "requires a block" if !block
-    @redis ||= Sidekiq::RedisConnection.create
+    @redis ||= Sidekiq::RedisConnection.create(@hash || {})
     @redis.with(&block)
   end
 
   def self.redis=(hash)
+    return @redis = hash if hash.is_a?(ConnectionPool)
+
     if hash.is_a?(Hash)
-      @redis = RedisConnection.create(hash)
-    elsif hash.is_a?(ConnectionPool)
-      @redis = hash
+      @hash = hash
     else
       raise ArgumentError, "redis= requires a Hash or ConnectionPool"
     end
@@ -112,18 +112,6 @@ module Sidekiq
 
   def self.poll_interval=(interval)
     self.options[:poll_interval] = interval
-  end
-
-  ##
-  # deprecated
-  def self.size(*queues)
-    return Sidekiq::Stats.new.enqueued if queues.empty?
-
-    Sidekiq.redis { |conn|
-      conn.multi {
-        queues.map { |q| conn.llen("queue:#{q}") }
-      }
-    }.inject(0) { |memo, count| memo + count }
   end
 
 end
