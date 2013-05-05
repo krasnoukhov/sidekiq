@@ -48,6 +48,9 @@ module Sidekiq
 
         def call(worker, msg, queue)
           yield
+        rescue Sidekiq::Shutdown
+          # ignore, will be pushed back onto queue
+          raise
         rescue Exception => e
           raise e unless msg['retry']
           max_retry_attempts = retry_attempts_from(msg['retry'], DEFAULT_MAX_RETRY_ATTEMPTS)
@@ -69,6 +72,8 @@ module Sidekiq
 
           if msg['backtrace'] == true
             msg['error_backtrace'] = e.backtrace
+          elsif msg['backtrace'] == false
+            # do nothing
           elsif msg['backtrace'].to_i != 0
             msg['error_backtrace'] = e.backtrace[0..msg['backtrace'].to_i]
           end

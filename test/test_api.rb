@@ -32,6 +32,18 @@ class TestApi < MiniTest::Unit::TestCase
       end
     end
 
+    describe "reset" do
+      it 'can reset stats' do
+        Sidekiq.redis do |conn|
+          conn.set('stat:processed', 5)
+          conn.set('stat:failed', 10)
+          Sidekiq::Stats.new.reset
+          assert_equal '0', conn.get('stat:processed')
+          assert_equal '0', conn.get('stat:failed')
+        end
+      end
+    end
+
     describe "queues" do
       it "is initially empty" do
         s = Sidekiq::Stats.new
@@ -179,6 +191,22 @@ class TestApi < MiniTest::Unit::TestCase
       assert_equal 0, q.size
     end
 
+    it 'can find job by id in sorted sets' do
+      q = Sidekiq::Queue.new
+      job_id = ApiWorker.perform_in(100, 1, 'jason')
+      job = Sidekiq::ScheduledSet.new.find_job(job_id)
+      refute_nil job
+      assert_equal job_id, job.jid
+    end
+
+    it 'can find job by id in queues' do
+      q = Sidekiq::Queue.new
+      job_id = ApiWorker.perform_async(1, 'jason')
+      job = q.find_job(job_id)
+      refute_nil job
+      assert_equal job_id, job.jid
+    end
+
     it 'can clear a queue' do
       q = Sidekiq::Queue.new
       2.times { ApiWorker.perform_async(1, 'mike') }
@@ -278,7 +306,7 @@ class TestApi < MiniTest::Unit::TestCase
 
       s = '12345'
       data = Sidekiq.dump_json({ 'payload' => {}, 'queue' => 'default', 'run_at' => Time.now.to_i })
-      Sidekiq.redis do |c| 
+      Sidekiq.redis do |c|
         c.multi do
           c.sadd('workers', s)
           c.set("worker:#{s}", data)

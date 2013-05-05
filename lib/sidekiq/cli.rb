@@ -48,7 +48,7 @@ module Sidekiq
         end
       end
 
-      logger.info "Booting Sidekiq #{Sidekiq::VERSION} with Redis at #{redis {|x| x.client.id}}"
+      redis {} # noop to connect redis and print info
       logger.info "Running in #{RUBY_DESCRIPTION}"
       logger.info Sidekiq::LICENSE
 
@@ -127,7 +127,7 @@ module Sidekiq
       # Celluloid can't be loaded until after we've daemonized
       # because it spins up threads and creates locks which get
       # into a very bad state if forked.
-      require 'celluloid'
+      require 'celluloid/autostart'
       Celluloid.logger = (options[:verbose] ? Sidekiq.logger : nil)
 
       require 'sidekiq/manager'
@@ -248,7 +248,7 @@ module Sidekiq
         end
 
         o.on '-i', '--index INT', "unique process index on this machine" do |arg|
-          opts[:index] = Integer(arg)
+          opts[:index] = Integer(arg.match(/\d+/)[0])
         end
 
         o.on '-p', '--profile', "Profile all code run by Sidekiq" do |arg|

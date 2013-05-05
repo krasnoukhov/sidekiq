@@ -16,6 +16,13 @@ module Sidekiq
       count.nil? ? 0 : count.to_i
     end
 
+    def reset
+      Sidekiq.redis do |conn|
+        conn.set("stat:failed", 0)
+        conn.set("stat:processed", 0)
+      end
+    end
+
     def queues
       Sidekiq.redis do |conn|
         queues = conn.smembers('queues')
@@ -137,6 +144,10 @@ module Sidekiq
       end
     end
 
+    def find_job(jid)
+      self.detect { |j| j.jid == jid }
+    end
+
     def clear
       Sidekiq.redis do |conn|
         conn.multi do
@@ -223,7 +234,7 @@ module Sidekiq
         results.map do |message|
           msg = Sidekiq.load_json(message)
           msg['retry_count'] = msg['retry_count'] - 1
-          conn.rpush("queue:#{msg['queue']}", Sidekiq.dump_json(msg))
+          conn.lpush("queue:#{msg['queue']}", Sidekiq.dump_json(msg))
         end
       end
     end
@@ -277,6 +288,10 @@ module Sidekiq
         end
         result
       end
+    end
+
+    def find_job(jid)
+      self.detect { |j| j.jid == jid }
     end
 
     def delete(score, jid = nil)

@@ -1,5 +1,9 @@
+require 'yaml'
 require 'sinatra/base'
 require 'slim'
+
+require 'sidekiq'
+require 'sidekiq/api'
 require 'sidekiq/paginator'
 
 module Sidekiq
@@ -7,12 +11,30 @@ module Sidekiq
     include Sidekiq::Paginator
 
     dir = File.expand_path(File.dirname(__FILE__) + "/../../web")
+
     set :public_folder, "#{dir}/assets"
     set :views,  "#{dir}/views"
     set :root, "#{dir}/public"
+    set :locales, "#{dir}/locales"
     set :slim, :pretty => true
 
     helpers do
+      def strings
+        @strings ||= begin
+          Dir["#{settings.locales}/*.yml"].inject({}) do |memo, file|
+            memo.merge(YAML.load(File.read(file)))
+          end
+        end
+      end
+
+      def get_locale
+        strings[(request.env["HTTP_ACCEPT_LANGUAGE"] || 'en')[0,2]] || strings['en']
+      end
+
+      def t(msg, options={})
+        string = get_locale[msg] || msg
+        string % options
+      end
 
       def reset_worker_list
         Sidekiq.redis do |conn|
@@ -84,6 +106,16 @@ module Sidekiq
       end
 
       def tabs
+        @tabs ||= {
+          "Dashboard" => '',
+          "Workers"   => 'workers',
+          "Queues"    => 'queues',
+          "Retries"   => 'retries',
+          "Scheduled" => 'scheduled',
+        }
+      end
+
+      def custom_tabs
         self.class.tabs
       end
 
@@ -230,13 +262,7 @@ module Sidekiq
     end
 
     def self.tabs
-      @tabs ||= {
-        "Dashboard" => '',
-        "Workers"   => 'workers',
-        "Queues"    => 'queues',
-        "Retries"   => 'retries',
-        "Scheduled" => 'scheduled',
-      }
+      @custom_tabs ||= {}
     end
 
   end

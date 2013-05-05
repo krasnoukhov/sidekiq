@@ -1,3 +1,55 @@
+2.11.3
+-----------
+
+- Fix unclean shutdown leading to duplicate jobs [#897]
+- Add Korean locale [#890]
+
+2.11.2
+-----------
+
+- Fix Web UI when used without Rails [#886]
+- Add Sidekiq::Stats#reset [#349]
+- Add Norwegian locale.
+- Updates for the JA locale.
+
+2.11.1
+-----------
+
+- Fix timeout warning.
+- Add Dutch web UI locale.
+
+2.11.0
+-----------
+
+- Upgrade to Celluloid 0.13. [#834]
+- Remove **timeout** support from `sidekiq_options`.  Ruby's timeout
+  is inherently unsafe in a multi-threaded application and was causing
+  stability problems for many.  See http://bit.ly/OtYpK
+- Add Japanese locale for Web UI [#868]
+- Fix a few issues with Web UI i18n.
+
+2.10.1
+-----------
+
+- Remove need for the i18n gem. (brandonhilkert)
+- Improve redis connection info logging on startup for debugging
+purposes [#858]
+- Revert sinatra/slim as runtime dependencies
+- Add `find_job` method to sidekiq/api
+
+
+2.10.0
+-----------
+
+- Refactor algorithm for putting scheduled jobs onto the queue [#843]
+- Fix scheduler thread dying due to incorrect error handling [#839]
+- Fix issue which left stale workers if Sidekiq wasn't shutdown while
+quiet. [#840]
+- I18n for web UI.  Please submit translations of `web/locales/en.yml` for
+your own language. [#811]
+- 'sinatra', 'slim' and 'i18n' are now gem dependencies for Sidekiq.
+
+
 2.9.0
 -----------
 
