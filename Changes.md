@@ -1,8 +1,17 @@
-2.11.3
+2.12.0
 -----------
 
+- Upgrade to Celluloid 0.14, remove the use of Celluloid's thread
+  pool.  This should halve the number of threads in each Sidekiq
+  process, thus requiring less resources. [#919]
+- Abstract Celluloid usage to Sidekiq::Actor for testing purposes.
+- Better handling for Redis downtime when fetching jobs and shutting
+  down, don't print exceptions every second and print success message
+  when Redis is back.
 - Fix unclean shutdown leading to duplicate jobs [#897]
 - Add Korean locale [#890]
+- Upgrade test suite to Minitest 5
+- Remove usage of `multi_json` as `json` is now robust on all platforms.
 
 2.11.2
 -----------

@@ -17,7 +17,7 @@ class Component
   end
 end
 
-class TestExceptionHandler < MiniTest::Unit::TestCase
+class TestExceptionHandler < Minitest::Test
   describe "with mock logger" do
     before do
       @old_logger = Sidekiq.logger
@@ -41,7 +41,7 @@ class TestExceptionHandler < MiniTest::Unit::TestCase
 
   describe "with fake Airbrake" do
     before do
-      ::Airbrake = MiniTest::Mock.new
+      ::Airbrake = Minitest::Mock.new
     end
 
     after do
@@ -57,7 +57,7 @@ class TestExceptionHandler < MiniTest::Unit::TestCase
 
   describe "with fake Honeybadger" do
     before do
-      ::Honeybadger = MiniTest::Mock.new
+      ::Honeybadger = Minitest::Mock.new
     end
 
     after do
@@ -73,8 +73,7 @@ class TestExceptionHandler < MiniTest::Unit::TestCase
 
   describe "with fake ExceptionNotifier" do
     before do
-      ::ExceptionNotifier = Module.new
-      ::ExceptionNotifier::Notifier = MiniTest::Mock.new
+      ::ExceptionNotifier = Minitest::Mock.new
     end
 
     after do
@@ -82,12 +81,9 @@ class TestExceptionHandler < MiniTest::Unit::TestCase
     end
 
     it "notifies ExceptionNotifier" do
-      mail = MiniTest::Mock.new
-      mail.expect(:deliver,nil)
-      ::ExceptionNotifier::Notifier.expect(:background_exception_notification,mail,[TEST_EXCEPTION, :data => { :message => { :b => 2 } }])
+      ::ExceptionNotifier.expect(:notify_exception,nil,[TEST_EXCEPTION, :data => { :message => { :b => 2 } }])
       Component.new.invoke_exception(:b => 2)
-      ::ExceptionNotifier::Notifier.verify
-      mail.verify
+      ::ExceptionNotifier.verify
     end
   end
 
@@ -104,9 +100,9 @@ class TestExceptionHandler < MiniTest::Unit::TestCase
         end
       end
 
-      ::Exceptional::Config = MiniTest::Mock.new
-      ::Exceptional::Remote = MiniTest::Mock.new
-      ::Exceptional::ExceptionData = MiniTest::Mock.new
+      ::Exceptional::Config = Minitest::Mock.new
+      ::Exceptional::Remote = Minitest::Mock.new
+      ::Exceptional::ExceptionData = Minitest::Mock.new
     end
 
     after do

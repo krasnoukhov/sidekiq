@@ -1,5 +1,5 @@
 require 'sidekiq'
-require 'celluloid'
+require 'sidekiq/actor'
 
 module Sidekiq
   ##
@@ -7,12 +7,13 @@ module Sidekiq
   # from the queues.  It gets the message and hands it to the Manager
   # to assign to a ready Processor.
   class Fetcher
-    include Celluloid
-    include Sidekiq::Util
+    include Util
+    include Actor
 
     TIMEOUT = 1
 
     def initialize(mgr, options)
+      @down = nil
       @mgr = mgr
       @strategy = Fetcher.strategy.new(options)
     end
@@ -31,6 +32,8 @@ module Sidekiq
 
         begin
           work = @strategy.retrieve_work
+          ::Sidekiq.logger.info("Redis is online, #{Time.now.to_f - @down.to_f} sec downtime") if @down
+          @down = nil
 
           if work
             @mgr.async.assign(work)
@@ -38,12 +41,25 @@ module Sidekiq
             after(0) { fetch }
           end
         rescue => ex
-          logger.error("Error fetching message: #{ex}")
-          logger.error(ex.backtrace.first)
-          sleep(TIMEOUT)
-          after(0) { fetch }
+          handle_exception(ex)
+        end
+
+      end
+    end
+
+    def handle_exception(ex)
+      if !@down
+        logger.error("Error fetching message: #{ex}")
+        ex.backtrace.each do |bt|
+          logger.error(bt)
         end
       end
+      @down ||= Time.now
+      sleep(TIMEOUT)
+      after(0) { fetch }
+    rescue Task::TerminatedError
+      # If redis is down when we try to shut down, all the fetch backlog
+      # raises these errors.  Haven't been able to figure out what I'm doing wrong.
     end
 
     # Ugh.  Say hello to a bloody hack.
@@ -88,6 +104,8 @@ module Sidekiq
         end
       end
       Sidekiq.logger.info("Pushed #{inprogress.size} messages back to Redis")
+    rescue => ex
+      Sidekiq.logger.warn("Failed to requeue #{inprogress.size} jobs: #{ex.message}")
     end
 
     UnitOfWork = Struct.new(:queue, :message) do

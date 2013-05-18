@@ -1,6 +1,5 @@
-require 'celluloid'
-
 require 'sidekiq/util'
+require 'sidekiq/actor'
 require 'sidekiq/processor'
 require 'sidekiq/fetch'
 
@@ -13,9 +12,12 @@ module Sidekiq
   #
   class Manager
     include Util
-    include Celluloid
-
+    include Actor
     trap_exit :processor_died
+
+    attr_reader :ready
+    attr_reader :busy
+    attr_accessor :fetcher
 
     def initialize(options={})
       logger.debug { options.inspect }
@@ -122,6 +124,8 @@ module Sidekiq
         end
         conn.srem('workers', workers_to_remove) if !workers_to_remove.empty?
       end
+    rescue => ex
+      Sidekiq.logger.warn("Unable to clear worker set while shutting down: #{ex.message}")
     end
 
     def hard_shutdown_in(delay)
