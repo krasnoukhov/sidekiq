@@ -40,6 +40,10 @@ module Sidekiq
                   if conn.zrem(sorted_set, message)
                     conn.multi do
                       conn.sadd('queues', msg['queue'])
+                      # PATCH: Keep message in schedule
+                      if sorted_set == 'schedule'
+                        conn.zadd('schedule', (Time.new + msg['expiration']).to_f.to_s, message)
+                      end
                       conn.lpush("queue:#{msg['queue']}", message)
                     end
                     logger.debug { "enqueued #{sorted_set}: #{message}" }
