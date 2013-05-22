@@ -231,6 +231,11 @@ module Sidekiq
       opts = {}
 
       @parser = OptionParser.new do |o|
+        # Patch: schedule fetch stragegy
+        o.on '-s', '--schedule', "run schedule fetch stragegy" do |arg|
+          ENV['SCHEDULE'] = '1'
+        end
+
         o.on '-c', '--concurrency INT', "processor threads to use" do |arg|
           opts[:concurrency] = Integer(arg)
         end

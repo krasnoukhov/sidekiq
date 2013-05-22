@@ -38,7 +38,12 @@ module Sidekiq
           if work
             @mgr.async.assign(work)
           else
-            after(0) { fetch }
+            # Patch: Next fetch after timeout (prevent 100% cpu load)
+            if @strategy.is_a?(ScheduleFetch)
+              after(TIMEOUT) { fetch }
+            else
+              after(0) { fetch }
+            end
           end
         rescue => ex
           handle_exception(ex)
@@ -74,7 +79,11 @@ module Sidekiq
     end
 
     def self.strategy
-      Sidekiq.options[:fetch] || BasicFetch
+      if ENV['SCHEDULE']
+        ScheduleFetch
+      else
+        Sidekiq.options[:fetch] || BasicFetch
+      end
     end
   end
 
@@ -132,6 +141,67 @@ module Sidekiq
     def queues_cmd
       queues = @strictly_ordered_queues ? @unique_queues.dup : @queues.shuffle.uniq
       queues << Sidekiq::Fetcher::TIMEOUT
+    end
+  end
+
+  # PATCH: Scheduled fetcher strategy
+  class ScheduleFetch
+    def initialize(options)
+      @queues = %w(schedule)
+    end
+
+    def retrieve_work
+      work = Sidekiq.redis { |conn|
+        sorted_set = @queues.sample
+        now = Time.now.to_f.to_s
+        
+        if message = conn.zrangebyscore(sorted_set, '-inf', now, :limit => [0, 1]).first
+          msg = Sidekiq.load_json(message)
+          
+          if conn.zrem(sorted_set, message)
+            # Keep message in schedule
+            if sorted_set == 'schedule'
+              conn.zadd('schedule', (Time.new + msg['expiration']).to_f.to_s, message)
+            end
+            ["queue:#{msg['queue']}", message]
+          end
+        end
+      }
+      UnitOfWork.new(*work) if work
+    end
+
+    def self.bulk_requeue(inprogress)
+      Sidekiq.logger.debug { "Re-queueing terminated jobs" }
+      jobs_to_requeue = {}
+      inprogress.each do |unit_of_work|
+        jobs_to_requeue[unit_of_work.queue_name] ||= []
+        jobs_to_requeue[unit_of_work.queue_name] << unit_of_work.message
+      end
+
+      Sidekiq.redis do |conn|
+        jobs_to_requeue.each do |queue, jobs|
+          conn.zadd("schedule", jobs.map { |job| [(Time.now.to_f + 60).to_s, job] })
+        end
+      end
+      Sidekiq.logger.info("Pushed #{inprogress.size} messages back to Redis")
+    rescue => ex
+      Sidekiq.logger.warn("Failed to requeue #{inprogress.size} jobs: #{ex.message}")
+    end
+
+    UnitOfWork = Struct.new(:queue, :message) do
+      def acknowledge
+        # nothing to do
+      end
+
+      def queue_name
+        queue.gsub(/.*queue:/, '')
+      end
+
+      def requeue
+        Sidekiq.redis do |conn|
+          conn.zadd("schedule", (Time.now.to_f + 60).to_s, message)
+        end
+      end
     end
   end
 end

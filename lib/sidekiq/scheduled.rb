@@ -16,7 +16,9 @@ module Sidekiq
       include Util
       include Actor
 
-      SETS = %w(retry schedule)
+      # PATCH: Poll only retries
+      SETS = %w(retry)
+      # SETS = %w(retry schedule)
 
       def poll(first_time=false)
         watchdog('scheduling poller thread died!') do
