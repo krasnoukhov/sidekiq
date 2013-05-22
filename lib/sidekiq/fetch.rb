@@ -154,17 +154,25 @@ module Sidekiq
       work = Sidekiq.redis { |conn|
         sorted_set = @queues.sample
         now = Time.now.to_f.to_s
+        message = nil
         
-        if message = conn.zrangebyscore(sorted_set, '-inf', now, :limit => [0, 1]).first
+        conn.watch(sorted_set) do
+          message = conn.zrangebyscore(sorted_set, '-inf', now, :limit => [0, 1]).first
+          
+          conn.multi do
+            conn.zrem(sorted_set, message)
+          end if message
+        end
+        
+        if message
           msg = Sidekiq.load_json(message)
           
-          if conn.zrem(sorted_set, message)
-            # Keep message in schedule
-            if sorted_set == 'schedule'
-              conn.zadd('schedule', (Time.new + msg['expiration']).to_f.to_s, message)
-            end
-            ["queue:#{msg['queue']}", message]
+          # Keep message in schedule
+          if sorted_set == 'schedule'
+            conn.zadd('schedule', (Time.new + msg['expiration']).to_f.to_s, message)
           end
+          
+          ["queue:#{msg['queue']}", message]
         end
       }
       UnitOfWork.new(*work) if work
