@@ -146,6 +146,12 @@ module Sidekiq
 
   # PATCH: Scheduled fetcher strategy
   class ScheduleFetch
+    ZPOP = <<-LUA
+      local val = redis.call('zrangebyscore', KEYS[1], '-inf', KEYS[2], 'LIMIT', 0, 1)
+      if val then redis.call('zrem', KEYS[1], val[1]) end
+      return val[1]
+    LUA
+    
     def initialize(options)
       @queues = %w(schedule)
     end
@@ -153,17 +159,10 @@ module Sidekiq
     def retrieve_work
       work = Sidekiq.redis { |conn|
         sorted_set = @queues.sample
+        namespace = conn.namespace
         now = Time.now.to_f.to_s
-        message = nil
         
-        conn.watch(sorted_set) do
-          message = conn.zrangebyscore(sorted_set, '-inf', now, :limit => [0, 1]).first
-          
-          conn.multi do
-            conn.zrem(sorted_set, message)
-          end if message
-        end
-        
+        message = conn.eval(ZPOP, ["#{namespace}:#{sorted_set}", now], {})
         if message
           msg = Sidekiq.load_json(message)
           
