@@ -98,6 +98,7 @@ module Sidekiq
               # PATCH: Remove unique attributes from hash
               at = hash['at']
               hash['at'] = 0
+              hash['enqueued_at'] = 0
               hash['jid'] = 'jid'
               
               [at.to_s, Sidekiq.dump_json(hash)]
