@@ -3,17 +3,11 @@ require 'sidekiq'
 module Sidekiq
   class Stats
     def processed
-      count = Sidekiq.redis do |conn|
-                conn.get("stat:processed")
-              end
-      count.nil? ? 0 : count.to_i
+      Sidekiq.redis { |conn| conn.get("stat:processed") }.to_i
     end
 
     def failed
-      count = Sidekiq.redis do |conn|
-                conn.get("stat:failed")
-              end
-      count.nil? ? 0 : count.to_i
+      Sidekiq.redis { |conn| conn.get("stat:failed") }.to_i
     end
 
     def reset
@@ -62,24 +56,6 @@ module Sidekiq
         date_stat_hash("failed")
       end
 
-      def self.cleanup
-        days_of_stats_to_keep = 180
-        today = Time.now.utc.to_date
-        delete_before_date = Time.now.utc.to_date - days_of_stats_to_keep
-
-        Sidekiq.redis do |conn|
-          processed_keys = conn.keys("stat:processed:*")
-          earliest = "stat:processed:#{delete_before_date.to_s}"
-          pkeys = processed_keys.select { |key| key < earliest }
-          conn.del(pkeys) if pkeys.size > 0
-
-          failed_keys = conn.keys("stat:failed:*")
-          earliest = "stat:failed:#{delete_before_date.to_s}"
-          fkeys = failed_keys.select { |key| key < earliest }
-          conn.del(fkeys) if fkeys.size > 0
-        end
-      end
-
       private
 
       def date_stat_hash(stat)
@@ -117,6 +93,10 @@ module Sidekiq
   class Queue
     include Enumerable
 
+    def self.all
+      Sidekiq.redis {|c| c.smembers('queues') }.map {|q| Sidekiq::Queue.new(q) }
+    end
+
     attr_reader :name
 
     def initialize(name="default")
@@ -126,6 +106,14 @@ module Sidekiq
 
     def size
       Sidekiq.redis { |con| con.llen(@rname) }
+    end
+
+    def latency
+      entry = Sidekiq.redis do |conn|
+        conn.lrange(@rname, -1, -1)
+      end.first
+      return 0 unless entry
+      Time.now.to_f - Sidekiq.load_json(entry)['enqueued_at']
     end
 
     def each(&block)
@@ -186,8 +174,16 @@ module Sidekiq
       @item['jid']
     end
 
+    def enqueued_at
+      Time.at(@item['enqueued_at'] || 0)
+    end
+
     def queue
       @queue
+    end
+
+    def latency
+      Time.now.to_f - @item['enqueued_at']
     end
 
     ##
@@ -234,7 +230,7 @@ module Sidekiq
         results.map do |message|
           msg = Sidekiq.load_json(message)
           msg['retry_count'] = msg['retry_count'] - 1
-          conn.lpush("queue:#{msg['queue']}", Sidekiq.dump_json(msg))
+          Sidekiq::Client.push(msg)
         end
       end
     end
@@ -372,15 +368,16 @@ module Sidekiq
   # WARNING WARNING WARNING
   #
   # This is live data that can change every millisecond.
-  # If you do #size => 5 and then expect #each to be
+  # If you call #size => 5 and then expect #each to be
   # called 5 times, you're going to have a bad time.
   #
   #    workers = Sidekiq::Workers.new
   #    workers.size => 2
-  #    workers.each do |name, work|
-  #      # name is a unique identifier per Processor instance
+  #    workers.each do |name, work, started_at|
+  #      # name is a unique identifier per worker
   #      # work is a Hash which looks like:
   #      # { 'queue' => name, 'run_at' => timestamp, 'payload' => msg }
+  #      # started_at is a String rep of the time when the worker started working on the job
   #    end
 
   class Workers
@@ -390,9 +387,12 @@ module Sidekiq
       Sidekiq.redis do |conn|
         workers = conn.smembers("workers")
         workers.each do |w|
-          msg = conn.get("worker:#{w}")
+          msg, time = conn.multi do
+            conn.get("worker:#{w}")
+            conn.get("worker:#{w}:started")
+          end
           next unless msg
-          block.call(w, Sidekiq.load_json(msg))
+          block.call(w, Sidekiq.load_json(msg), time)
         end
       end
     end

@@ -1,3 +1,38 @@
+2.12.4
+-----------
+
+- Fix error in previous release which crashed the Manager when a
+  Processor died.
+
+2.12.3
+-----------
+
+- Revert back to Celluloid's TaskFiber for job processing which has proven to be more
+  stable than TaskThread. [#985]
+- Avoid possible lockup during hard shutdown [#997]
+
+At this point, if you are experiencing stability issues with Sidekiq in
+Ruby 1.9, please try Ruby 2.0.  It seems to be more stable.
+
+2.12.2
+-----------
+
+- Relax slim version requirement to >= 1.1.0
+- Refactor historical stats to use TTL, not explicit cleanup. [grosser, #971]
+
+2.12.1
+-----------
+
+- Force Celluloid 0.14.1 as 0.14.0 has a serious bug. [#954]
+- Scheduled and Retry jobs now use Sidekiq::Client to push
+  jobs onto the queue, so they use client middleware. [dimko, #948]
+- Record the timestamp when jobs are enqueued. Add
+  Sidekiq::Job#enqueued\_at to query the time. [mariovisic, #944]
+- Add Sidekiq::Queue#latency - calculates diff between now and
+  enqueued\_at for the oldest job in the queue.
+- Add testing method `perform_one` that dequeues and performs a single job.
+  This is mainly to aid testing jobs that spawn other jobs. [fumin, #963]
+
 2.12.0
 -----------
 

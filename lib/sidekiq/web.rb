@@ -2,7 +2,7 @@ require 'yaml'
 require 'sinatra/base'
 require 'slim'
 
-raise "The Sidekiq Web UI requires slim 1.3.8 or greater.  You have slim v#{Slim::VERSION}" if Slim::VERSION < '1.3.8'
+raise "The Sidekiq Web UI requires slim 1.1.0 or greater.  You have slim v#{Slim::VERSION}" if Gem::Version.new(Slim::VERSION) < Gem::Version.new('1.1.0')
 
 require 'sidekiq'
 require 'sidekiq/api'
@@ -41,9 +41,7 @@ module Sidekiq
       def reset_worker_list
         Sidekiq.redis do |conn|
           workers = conn.smembers('workers')
-          workers.each do |name|
-            conn.srem('workers', name)
-          end
+          conn.srem('workers', *workers)
         end
       end
 
@@ -104,7 +102,24 @@ module Sidekiq
       end
 
       def display_args(args, count=100)
-        args.map { |arg| a = arg.inspect; a.size > count ? "#{a[0..count]}..." : a }.join(", ")
+        args.map do |arg|
+          a = arg.inspect
+          a.size > count ? "#{a[0..count]}..." : a
+        end.join(", ")
+      end
+
+      RETRY_JOB_KEYS = Set.new(%w(
+        queue class args retry_count retried_at failed_at
+        jid error_message error_class backtrace
+        error_backtrace enqueued_at retry
+      ))
+
+      def retry_extra_items(retry_job)
+        @retry_extra_items ||= {}.tap do |extra|
+          retry_job.item.each do |key, value|
+            extra[key] = value unless RETRY_JOB_KEYS.include?(key)
+          end
+        end
       end
 
       def tabs
@@ -144,7 +159,7 @@ module Sidekiq
     end
 
     get "/queues" do
-      @queues = Sidekiq::Stats.new.queues
+      @queues = Sidekiq::Queue.all
       slim :queues
     end
 
