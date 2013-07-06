@@ -47,6 +47,8 @@ module Sidekiq
                     #   end
                     # end
 
+                    # PATCH: Retry to queue
+                    message.delete('at')
                     Sidekiq::Client.push(Sidekiq.load_json(message))
                     logger.debug { "enqueued #{sorted_set}: #{message}" }
                   end
