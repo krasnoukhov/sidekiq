@@ -93,7 +93,8 @@ module Sidekiq
       def raw_push(payloads)
         pushed = false
         Sidekiq.redis do |conn|
-          if payloads.first['at']
+          # PATCH: Retry to queue
+          if payloads.first['at'] && !payloads.first['failed_at']
             pushed = conn.zadd('schedule', payloads.map do |hash|
               # PATCH: Remove unique attributes from hash
               at = hash['at']
