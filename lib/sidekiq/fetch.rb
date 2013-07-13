@@ -187,7 +187,7 @@ module Sidekiq
 
       Sidekiq.redis do |conn|
         jobs_to_requeue.each do |queue, jobs|
-          conn.zadd("schedule", jobs.map { |job| [(Time.now.to_f + 60).to_s, job] })
+          conn.rpush("queue:#{queue}", jobs)
         end
       end
       Sidekiq.logger.info("Pushed #{inprogress.size} messages back to Redis")
