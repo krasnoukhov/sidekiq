@@ -206,7 +206,7 @@ module Sidekiq
 
       def requeue
         Sidekiq.redis do |conn|
-          conn.zadd("schedule", (Time.now.to_f + 60).to_s, message)
+          conn.rpush("queue:#{queue_name}", message)
         end
       end
     end
