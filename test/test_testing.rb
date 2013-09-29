@@ -49,6 +49,7 @@ class TestTesting < Minitest::Test
     before do
       load 'sidekiq/testing.rb'
       EnqueuedWorker.jobs.clear
+      DirectWorker.jobs.clear
     end
 
     after do
@@ -110,6 +111,36 @@ class TestTesting < Minitest::Test
       end
       assert_equal 0, StoredWorker.jobs.size
 
+    end
+
+    class SpecificJidWorker
+      include Sidekiq::Worker
+      class_attribute :count
+      self.count = 0
+      def perform(worker_jid)
+        return unless worker_jid == self.jid
+        self.class.count += 1
+      end
+    end
+
+    it 'execute only jobs with assigned JID' do
+      4.times do |i|
+        jid = SpecificJidWorker.perform_async(nil)
+        if i % 2 == 0
+          SpecificJidWorker.jobs[-1]["args"] = ["wrong_jid"]
+        else
+          SpecificJidWorker.jobs[-1]["args"] = [jid]
+        end
+      end
+
+      SpecificJidWorker.perform_one
+      assert_equal 0, SpecificJidWorker.count
+
+      SpecificJidWorker.perform_one
+      assert_equal 1, SpecificJidWorker.count
+
+      SpecificJidWorker.drain
+      assert_equal 2, SpecificJidWorker.count
     end
 
     it 'round trip serializes the job arguments' do

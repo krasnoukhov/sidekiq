@@ -76,6 +76,26 @@ class TestWeb < Minitest::Test
       end
     end
 
+    it 'can clear an empty worker list' do
+      post '/reset'
+      assert_equal 302, last_response.status
+    end
+
+    it 'can clear a non-empty worker list' do
+      Sidekiq.redis do |conn|
+        identity = 'foo'
+        conn.sadd('workers', identity)
+      end
+
+      post '/reset'
+
+      assert_equal 302, last_response.status
+
+      Sidekiq.redis do |conn|
+        refute conn.smembers('workers').any?
+      end
+    end
+
     it 'can delete a job' do
       Sidekiq.redis do |conn|
         conn.rpush('queue:foo', "{}")
@@ -110,7 +130,7 @@ class TestWeb < Minitest::Test
 
     it 'can display a single retry' do
       params = add_retry
-      get '/retries/2c4c17969825a384a92f023b'
+      get '/retries/0-shouldntexist'
       assert_equal 302, last_response.status
       get "/retries/#{job_params(*params)}"
       assert_equal 200, last_response.status
@@ -118,7 +138,7 @@ class TestWeb < Minitest::Test
     end
 
     it 'handles missing retry' do
-      get "/retries/2c4c17969825a384a92f023b"
+      get "/retries/0-shouldntexist"
       assert_equal 302, last_response.status
     end
 
@@ -167,6 +187,42 @@ class TestWeb < Minitest::Test
       assert_match /HardWorker/, last_response.body
     end
 
+    it 'can display a single scheduled job' do
+      params = add_scheduled
+      get '/scheduled/0-shouldntexist'
+      assert_equal 302, last_response.status
+      get "/scheduled/#{job_params(*params)}"
+      assert_equal 200, last_response.status
+      assert_match /HardWorker/, last_response.body
+    end
+
+    it 'handles missing scheduled job' do
+      get "/scheduled/0-shouldntexist"
+      assert_equal 302, last_response.status
+    end
+
+    it 'can add to queue a single scheduled job' do
+      params = add_scheduled
+      post "/scheduled/#{job_params(*params)}", 'add_to_queue' => true
+      assert_equal 302, last_response.status
+      assert_equal 'http://example.org/scheduled', last_response.header['Location']
+
+      get '/queues/default'
+      assert_equal 200, last_response.status
+      assert_match /#{params.first['args'][2]}/, last_response.body
+    end
+
+    it 'can delete a single scheduled job' do
+      params = add_scheduled
+      post "/scheduled/#{job_params(*params)}", 'delete' => 'Delete'
+      assert_equal 302, last_response.status
+      assert_equal 'http://example.org/scheduled', last_response.header['Location']
+
+      get "/scheduled"
+      assert_equal 200, last_response.status
+      refute_match /#{params.first['args'][2]}/, last_response.body
+    end
+
     it 'can delete scheduled' do
       params = add_scheduled
       Sidekiq.redis do |conn|
@@ -175,6 +231,23 @@ class TestWeb < Minitest::Test
         assert_equal 302, last_response.status
         assert_equal 'http://example.org/scheduled', last_response.header['Location']
         assert_equal 0, conn.zcard('schedule')
+      end
+    end
+
+    it "can move scheduled to default queue" do
+      q = Sidekiq::Queue.new
+      params = add_scheduled
+      Sidekiq.redis do |conn|
+        assert_equal 1, conn.zcard('schedule')
+        assert_equal 0, q.size
+        post '/scheduled', 'key' => [job_params(*params)], 'add_to_queue' => 'AddToQueue'
+        assert_equal 302, last_response.status
+        assert_equal 'http://example.org/scheduled', last_response.header['Location']
+        assert_equal 0, conn.zcard('schedule')
+        assert_equal 1, q.size
+        get '/queues/default'
+        assert_equal 200, last_response.status
+        assert_match /#{params[0]['args'][2]}/, last_response.body
       end
     end
 

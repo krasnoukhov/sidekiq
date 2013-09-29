@@ -3,6 +3,46 @@ Sidekiq Pro Changelog
 
 Please see http://sidekiq.org/pro for more details and how to buy.
 
+1.2.3
+-----------
+
+- Pro now requires Sidekiq 2.14.0
+- Fix bad exception handling in batch callbacks [#1134]
+- Convert Batch UI to ERB
+
+1.2.2
+-----------
+
+- Problem with reliable fetch which could lead to lost jobs when Sidekiq
+  is shut down normally.  Thanks to MikaelAmborn for the report. [#1109]
+
+1.2.1
+-----------
+
+- Forgot to push paging code necessary for `delete_job` performance.
+
+1.2.0
+-----------
+
+- **LEAK** Fix batch key which didn't expire in Redis.  Keys match
+  /b-[a-f0-9]{16}-pending/, e.g. "b-4f55163ddba10aa0-pending" [#1057]
+- **Reliable fetch now supports multiple queues**, using the algorithm spec'd
+  by @jackrg [#1102]
+- Fix issue with reliable\_push where it didn't return the JID for a pushed
+  job when sending previously cached jobs to Redis.
+- Add fast Sidekiq::Queue#delete\_job(jid) API which leverages Lua so job lookup is
+  100% server-side.  Benchmark vs Sidekiq's Job#delete API:
+
+```
+Sidekiq Pro API
+  0.030000   0.020000   0.050000 (  1.640659)
+Sidekiq API
+ 17.250000   2.220000  19.470000 ( 22.193300)
+```
+
+- Add fast Sidekiq::Queue#delete\_by\_class(klass) API to remove all
+  jobs of a given type.  Uses server-side Lua for performance.
+
 1.1.0
 -----------
 

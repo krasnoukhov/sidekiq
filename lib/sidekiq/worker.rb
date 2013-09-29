@@ -26,6 +26,8 @@ module Sidekiq
     def self.included(base)
       base.extend(ClassMethods)
       base.class_attribute :sidekiq_options_hash
+      base.class_attribute :sidekiq_retry_in_block
+      base.class_attribute :sidekiq_retries_exhausted_block
     end
 
     def logger
@@ -40,8 +42,15 @@ module Sidekiq
 
       def perform_in(interval, *args)
         int = interval.to_f
-        ts = (int < 1_000_000_000 ? Time.now.to_f + int : int)
-        client_push('class' => self, 'args' => args, 'at' => ts)
+        now = Time.now.to_f
+        ts = (int < 1_000_000_000 ? now + int : int)
+
+        # Optimization to enqueue something now that is scheduled to go out now or in the past
+        if ts <= now
+          perform_async(*args)
+        else
+          client_push('class' => self, 'args' => args, 'at' => ts)
+        end
       end
       alias_method :perform_at, :perform_in
 
@@ -56,6 +65,14 @@ module Sidekiq
       def sidekiq_options(opts={})
         self.sidekiq_options_hash = get_sidekiq_options.merge((opts || {}).stringify_keys)
         ::Sidekiq.logger.warn("#{self.name} - :timeout is unsafe and support has been removed from Sidekiq, see http://bit.ly/OtYpK for details") if opts.include? :timeout
+      end
+
+      def sidekiq_retry_in(&block)
+        self.sidekiq_retry_in_block = block
+      end
+
+      def sidekiq_retries_exhausted(&block)
+        self.sidekiq_retries_exhausted_block = block
       end
 
       DEFAULT_OPTIONS = { 'retry' => true, 'queue' => 'default' }

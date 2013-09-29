@@ -139,7 +139,7 @@ module Sidekiq
     def clear
       Sidekiq.redis do |conn|
         conn.multi do
-          conn.del("queue:#{name}")
+          conn.del(@rname)
           conn.srem("queues", name)
         end
       end
@@ -175,7 +175,7 @@ module Sidekiq
     end
 
     def enqueued_at
-      Time.at(@item['enqueued_at'] || 0)
+      Time.at(@item['enqueued_at'] || 0).utc
     end
 
     def queue
@@ -210,7 +210,7 @@ module Sidekiq
     end
 
     def at
-      Time.at(score)
+      Time.at(score).utc
     end
 
     def delete
@@ -220,6 +220,17 @@ module Sidekiq
     def reschedule(at)
       @parent.delete(score, jid)
       @parent.schedule(at, item)
+    end
+
+    def add_to_queue
+      Sidekiq.redis do |conn|
+        results = conn.zrangebyscore('schedule', score, score)
+        conn.zremrangebyscore('schedule', score, score)
+        results.map do |message|
+          msg = Sidekiq.load_json(message)
+          Sidekiq::Client.push(msg)
+        end
+      end
     end
 
     def retry

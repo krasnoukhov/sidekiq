@@ -1,3 +1,65 @@
+2.14.1
+-----------
+
+- Fix misc Web UI issues due to ERB conversion.
+- Bump redis-namespace version due to security issue.
+
+2.14.0
+-----------
+
+- Removed slim gem dependency, Web UI now uses ERB [Locke23rus, #1120]
+- Fix more race conditions in Web UI actions
+- Don't reset Job enqueued\_at when retrying
+- Timestamp tooltips in the Web UI should use UTC
+- Fix invalid usage of handle\_exception causing issues in Airbrake
+  [#1134]
+
+
+2.13.1
+-----------
+
+- Make Sidekiq::Middleware::Chain Enumerable
+- Make summary bar and graphs responsive [manishval, #1025]
+- Adds a job status page for scheduled jobs [jonhyman]
+- Handle race condition in retrying and deleting jobs in the Web UI
+- The Web UI relative times are now i18n. [MadRabbit, #1088]
+- Allow for default number of retry attempts to be set for
+  `Sidekiq::Middleware::Server::RetryJobs` middleware. [czarneckid] [#1091]
+
+```ruby
+Sidekiq.configure_server do |config|
+  config.server_middleware do |chain|
+    chain.add Sidekiq::Middleware::Server::RetryJobs, :max_retries => 10
+  end
+end
+```
+
+
+2.13.0
+-----------
+
+- Adding button to move scheduled job to main queue [guiceolin, #1020]
+- fix i18n support resetting saved locale when job is retried [#1011]
+- log rotation via USR2 now closes the old logger [#1008]
+- Add ability to customize retry schedule, like so [jmazzi, #1027]
+
+```ruby
+class MyWorker
+  include Sidekiq::Worker
+  sidekiq_retry_in { |count| count * 2 }
+end
+```
+- Redesign Worker#retries\_exhausted callback to use same form as above [jmazzi, #1030]
+
+```ruby
+class MyWorker
+  include Sidekiq::Worker
+  sidekiq_retries_exhausted do |msg|
+    Rails.logger.error "Failed to process #{msg['class']} with args: #{msg['args']}"
+  end
+end
+```
+
 2.12.4
 -----------
 

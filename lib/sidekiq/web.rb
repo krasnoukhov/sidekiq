@@ -1,8 +1,6 @@
+require 'erb'
 require 'yaml'
 require 'sinatra/base'
-require 'slim'
-
-raise "The Sidekiq Web UI requires slim 1.1.0 or greater.  You have slim v#{Slim::VERSION}" if Gem::Version.new(Slim::VERSION) < Gem::Version.new('1.1.0')
 
 require 'sidekiq'
 require 'sidekiq/api'
@@ -12,25 +10,27 @@ module Sidekiq
   class Web < Sinatra::Base
     include Sidekiq::Paginator
 
-    dir = File.expand_path(File.dirname(__FILE__) + "/../../web")
-
-    set :public_folder, "#{dir}/assets"
-    set :views,  "#{dir}/views"
-    set :root, "#{dir}/public"
-    set :locales, "#{dir}/locales"
-    set :slim, :pretty => true
+    set :root, File.expand_path(File.dirname(__FILE__) + "/../../web")
+    set :public_folder, Proc.new { "#{root}/assets" }
+    set :views, Proc.new { "#{root}/views" }
+    set :locales, Proc.new { "#{root}/locales" }
 
     helpers do
       def strings
         @strings ||= begin
           Dir["#{settings.locales}/*.yml"].inject({}) do |memo, file|
-            memo.merge(YAML.load(File.read(file)))
+            memo.merge(YAML.load(File.open(file)))
           end
         end
       end
 
+      def locale
+        lang = (request.env["HTTP_ACCEPT_LANGUAGE"] || 'en')[0,2]
+        strings[lang] ? lang : 'en'
+      end
+
       def get_locale
-        strings[(request.env["HTTP_ACCEPT_LANGUAGE"] || 'en')[0,2]] || strings['en']
+        strings[locale]
       end
 
       def t(msg, options={})
@@ -41,7 +41,13 @@ module Sidekiq
       def reset_worker_list
         Sidekiq.redis do |conn|
           workers = conn.smembers('workers')
-          conn.srem('workers', *workers)
+          conn.srem('workers', workers) if !workers.empty?
+        end
+      end
+
+      def workers_size
+        @workers_size ||= Sidekiq.redis do |conn|
+          conn.scard('workers')
         end
       end
 
@@ -84,7 +90,7 @@ module Sidekiq
       end
 
       def current_status
-        return 'idle' if workers.size == 0
+        return 'idle' if workers_size == 0
         return 'active'
       end
 
@@ -101,10 +107,10 @@ module Sidekiq
         [score.to_f, jid]
       end
 
-      def display_args(args, count=100)
+      def display_args(args, truncate_after_chars = 2000)
         args.map do |arg|
           a = arg.inspect
-          a.size > count ? "#{a[0..count]}..." : a
+          truncate_after_chars && a.size > truncate_after_chars ? "#{a[0..truncate_after_chars]}..." : a
         end.join(", ")
       end
 
@@ -152,15 +158,19 @@ module Sidekiq
       def redis_keys
         ["redis_stats", "uptime_in_days", "connected_clients", "used_memory_human", "used_memory_peak_human"]
       end
+
+      def h(text)
+        ERB::Util.h(text)
+      end
     end
 
     get "/workers" do
-      slim :index
+      erb :index
     end
 
     get "/queues" do
       @queues = Sidekiq::Queue.all
-      slim :queues
+      erb :queues
     end
 
     get "/queues/:name" do
@@ -169,7 +179,7 @@ module Sidekiq
       @name = params[:name]
       (@current_page, @total_size, @messages) = page("queue:#{@name}", params[:page], @count)
       @messages = @messages.map {|msg| Sidekiq.load_json(msg) }
-      slim :queue
+      erb :queue
     end
 
     post "/reset" do
@@ -191,14 +201,14 @@ module Sidekiq
       @count = (params[:count] || 25).to_i
       (@current_page, @total_size, @retries) = page("retry", params[:page], @count)
       @retries = @retries.map {|msg, score| [Sidekiq.load_json(msg), score] }
-      slim :retries
+      erb :retries
     end
 
     get "/retries/:key" do
       halt 404 unless params['key']
       @retry = Sidekiq::RetrySet.new.fetch(*parse_params(params['key'])).first
       redirect "#{root_path}retries" if @retry.nil?
-      slim :retry
+      erb :retry
     end
 
     post '/retries' do
@@ -206,6 +216,7 @@ module Sidekiq
 
       params['key'].each do |key|
         job = Sidekiq::RetrySet.new.fetch(*parse_params(key)).first
+        next unless job
         if params['retry']
           job.retry
         elsif params['delete']
@@ -228,10 +239,12 @@ module Sidekiq
     post "/retries/:key" do
       halt 404 unless params['key']
       job = Sidekiq::RetrySet.new.fetch(*parse_params(params['key'])).first
-      if params['retry']
-        job.retry
-      elsif params['delete']
-        job.delete
+      if job
+        if params['retry']
+          job.retry
+        elsif params['delete']
+          job.delete
+        end
       end
       redirect "#{root_path}retries"
     end
@@ -240,14 +253,41 @@ module Sidekiq
       @count = (params[:count] || 25).to_i
       (@current_page, @total_size, @scheduled) = page("schedule", params[:page], @count)
       @scheduled = @scheduled.map {|msg, score| [Sidekiq.load_json(msg), score] }
-      slim :scheduled
+      erb :scheduled
+    end
+
+    get "/scheduled/:key" do
+      halt 404 unless params['key']
+      @job = Sidekiq::ScheduledSet.new.fetch(*parse_params(params['key'])).first
+      redirect "#{root_path}scheduled" if @job.nil?
+      erb :scheduled_job_info
     end
 
     post '/scheduled' do
       halt 404 unless params['key']
-      halt 404 unless params['delete']
+
       params['key'].each do |key|
-        Sidekiq::ScheduledSet.new.fetch(*parse_params(key)).first.delete
+        job = Sidekiq::ScheduledSet.new.fetch(*parse_params(key)).first
+        if job
+          if params['delete']
+            job.delete
+          elsif params['add_to_queue']
+            job.add_to_queue
+          end
+        end
+      end
+      redirect "#{root_path}scheduled"
+    end
+
+    post "/scheduled/:key" do
+      halt 404 unless params['key']
+      job = Sidekiq::ScheduledSet.new.fetch(*parse_params(params['key'])).first
+      if job
+        if params['add_to_queue']
+          job.add_to_queue
+        elsif params['delete']
+          job.delete
+        end
       end
       redirect "#{root_path}scheduled"
     end
@@ -257,7 +297,7 @@ module Sidekiq
       stats_history = Sidekiq::Stats::History.new((params[:days] || 30).to_i)
       @processed_history = stats_history.processed
       @failed_history = stats_history.failed
-      slim :dashboard
+      erb :dashboard
     end
 
     get '/dashboard/stats' do
@@ -269,7 +309,7 @@ module Sidekiq
         sidekiq: {
           processed:  sidekiq_stats.processed,
           failed:     sidekiq_stats.failed,
-          busy:       workers.size,
+          busy:       workers_size,
           enqueued:   sidekiq_stats.enqueued,
           scheduled:  sidekiq_stats.scheduled_size,
           retries:    sidekiq_stats.retry_size,
@@ -285,4 +325,3 @@ module Sidekiq
   end
 
 end
-
