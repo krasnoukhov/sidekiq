@@ -117,18 +117,23 @@ module Sidekiq
     end
 
     def each(&block)
+      initial_size = size
+      deleted_size = 0
       page = 0
       page_size = 50
 
       loop do
+        range_start = page * page_size - deleted_size
+        range_end   = page * page_size - deleted_size + (page_size - 1)
         entries = Sidekiq.redis do |conn|
-          conn.lrange @rname, page * page_size, (page * page_size) + page_size - 1
+          conn.lrange @rname, range_start, range_end
         end
         break if entries.empty?
         page += 1
         entries.each do |entry|
           block.call Job.new(entry, @name)
         end
+        deleted_size = initial_size - size
       end
     end
 
@@ -252,6 +257,7 @@ module Sidekiq
 
     def initialize(name)
       @zset = name
+      @_size = size
     end
 
     def size
@@ -260,24 +266,28 @@ module Sidekiq
 
     def schedule(timestamp, message)
       Sidekiq.redis do |conn|
-        conn.zadd(@zset, timestamp.to_s, Sidekiq.dump_json(message))
+        conn.zadd(@zset, timestamp.to_f.to_s, Sidekiq.dump_json(message))
       end
     end
 
     def each(&block)
-      # page thru the sorted set backwards so deleting entries doesn't screw up indexing
+      initial_size = @_size
+      offset_size = 0
       page = -1
       page_size = 50
 
       loop do
+        range_start = page * page_size + offset_size
+        range_end   = page * page_size + offset_size + (page_size - 1)
         elements = Sidekiq.redis do |conn|
-          conn.zrange @zset, page * page_size, (page * page_size) + (page_size - 1), :with_scores => true
+          conn.zrange @zset, range_start, range_end, :with_scores => true
         end
         break if elements.empty?
         page -= 1
         elements.each do |element, score|
           block.call SortedEntry.new(self, score, element)
         end
+        offset_size = initial_size - @_size
       end
     end
 
@@ -311,13 +321,21 @@ module Sidekiq
           message = Sidekiq.load_json(element)
 
           if message["jid"] == jid
-            Sidekiq.redis { |conn| conn.zrem(@zset, element) }
+            _, @_size = Sidekiq.redis do |conn|
+              conn.multi do
+                conn.zrem(@zset, element)
+                conn.zcard @zset
+              end
+            end
           end
         end
         elements_with_jid.count != 0
       else
-        count = Sidekiq.redis do |conn|
-          conn.zremrangebyscore(@zset, score, score)
+        count, @_size = Sidekiq.redis do |conn|
+          conn.multi do
+            conn.zremrangebyscore(@zset, score, score)
+            conn.zcard @zset
+          end
         end
         count != 0
       end

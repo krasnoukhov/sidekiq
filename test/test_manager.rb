@@ -1,29 +1,13 @@
 require 'helper'
 require 'sidekiq/manager'
 
-class TestManager < Minitest::Test
+class TestManager < Sidekiq::Test
 
   describe 'manager' do
     it 'creates N processor instances' do
       mgr = Sidekiq::Manager.new(options)
       assert_equal options[:concurrency], mgr.ready.size
       assert_equal [], mgr.busy
-      assert mgr.fetcher
-    end
-
-    it 'fetches upon start' do
-      mgr = Sidekiq::Manager.new(options)
-      count = options[:concurrency]
-
-      fetch_mock = Minitest::Mock.new
-      count.times { fetch_mock.expect(:fetch, nil, []) }
-      async_mock = Minitest::Mock.new
-      count.times { async_mock.expect(:async, fetch_mock, []) }
-      mgr.fetcher = async_mock
-      mgr.start
-
-      fetch_mock.verify
-      async_mock.verify
     end
 
     it 'assigns work to a processor' do
@@ -56,11 +40,14 @@ class TestManager < Minitest::Test
 
       assert mgr.busy.empty?
       assert mgr.ready.empty?
-      refute mgr.fetcher.alive?
     end
 
     it 'returns finished processors to the ready pool' do
+      fetcher = MiniTest::Mock.new
+      fetcher.expect :async, fetcher, []
+      fetcher.expect :fetch, nil, []
       mgr = Sidekiq::Manager.new(options)
+      mgr.fetcher = fetcher
       init_size = mgr.ready.size
       processor = mgr.ready.pop
       mgr.busy << processor
@@ -68,10 +55,15 @@ class TestManager < Minitest::Test
 
       assert_equal 0, mgr.busy.size
       assert_equal init_size, mgr.ready.size
+      fetcher.verify
     end
 
     it 'throws away dead processors' do
+      fetcher = MiniTest::Mock.new
+      fetcher.expect :async, fetcher, []
+      fetcher.expect :fetch, nil, []
       mgr = Sidekiq::Manager.new(options)
+      mgr.fetcher = fetcher
       init_size = mgr.ready.size
       processor = mgr.ready.pop
       mgr.busy << processor
@@ -80,6 +72,7 @@ class TestManager < Minitest::Test
       assert_equal 0, mgr.busy.size
       assert_equal init_size, mgr.ready.size
       refute mgr.ready.include?(processor)
+      fetcher.verify
     end
 
     def options

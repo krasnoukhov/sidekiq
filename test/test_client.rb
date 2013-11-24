@@ -2,7 +2,7 @@ require 'helper'
 require 'sidekiq/client'
 require 'sidekiq/worker'
 
-class TestClient < Minitest::Test
+class TestClient < Sidekiq::Test
   describe 'with mock redis' do
     before do
       @redis = Minitest::Mock.new
@@ -46,7 +46,30 @@ class TestClient < Minitest::Test
       assert_raises ArgumentError do
         Sidekiq::Client.push('queue' => 'foo', 'class' => MyWorker, 'args' => 1)
       end
+    end
 
+    describe 'as instance' do
+      it 'can push' do
+        @redis.expect :lpush, 1, ['queue:default', Array]
+        client = Sidekiq::Client.new
+        jid = client.push('class' => 'Blah', 'args' => [1,2,3])
+        assert_equal 24, jid.size
+      end
+
+      it 'allows local middleware modification' do
+        @redis.expect :lpush, 1, ['queue:default', Array]
+        $called = false
+        mware = Class.new { def call(worker_klass,msg,q); $called = true; msg;end }
+        client = Sidekiq::Client.new
+        client.middleware do |chain|
+          chain.add mware
+        end
+        client.push('class' => 'Blah', 'args' => [1,2,3])
+
+        assert $called
+        assert client.middleware.exists?(mware)
+        refute Sidekiq.client_middleware.exists?(mware)
+      end
     end
 
     it 'pushes messages to redis' do
@@ -70,7 +93,7 @@ class TestClient < Minitest::Test
     end
 
     it 'has default options' do
-      assert_equal Sidekiq::Worker::ClassMethods::DEFAULT_OPTIONS, MyWorker.get_sidekiq_options
+      assert_equal Sidekiq.default_worker_options, MyWorker.get_sidekiq_options
     end
 
     it 'handles perform_async' do
@@ -101,6 +124,27 @@ class TestClient < Minitest::Test
       @redis.verify
     end
 
+    it 'enqueues messages to redis (delayed, custom queue)' do
+      @redis.expect :zadd, 1, ['schedule', Array]
+      pushed = Sidekiq::Client.enqueue_to_in(:custom_queue, 3.minutes, MyWorker, 1, 2)
+      assert pushed
+      @redis.verify
+    end
+
+    it 'enqueues messages to redis (delayed into past, custom queue)' do
+      @redis.expect :lpush, 1, ['queue:custom_queue', Array]
+      pushed = Sidekiq::Client.enqueue_to_in(:custom_queue, -3.minutes, MyWorker, 1, 2)
+      assert pushed
+      @redis.verify
+    end
+
+    it 'enqueues messages to redis (delayed)' do
+      @redis.expect :zadd, 1, ['schedule', Array]
+      pushed = Sidekiq::Client.enqueue_in(3.minutes, MyWorker, 1, 2)
+      assert pushed
+      @redis.verify
+    end
+
     class QueuedWorker
       include Sidekiq::Worker
       sidekiq_options :queue => :flimflam
@@ -115,12 +159,7 @@ class TestClient < Minitest::Test
 
     it 'retrieves queues' do
       @redis.expect :smembers, ['bob'], ['queues']
-      assert_equal ['bob'], Sidekiq::Client.registered_queues
-    end
-
-    it 'retrieves workers' do
-      @redis.expect :smembers, ['bob'], ['workers']
-      assert_equal ['bob'], Sidekiq::Client.registered_workers
+      assert_equal ['bob'], Sidekiq::Queue.all.map(&:name)
     end
   end
 
@@ -180,11 +219,11 @@ class TestClient < Minitest::Test
 
   describe 'item normalization' do
     it 'defaults retry to true' do
-      assert_equal true, Sidekiq::Client.send(:normalize_item, 'class' => QueuedWorker, 'args' => [])['retry']
+      assert_equal true, Sidekiq::Client.new.send(:normalize_item, 'class' => QueuedWorker, 'args' => [])['retry']
     end
 
     it "does not normalize numeric retry's" do
-      assert_equal 2, Sidekiq::Client.send(:normalize_item, 'class' => CWorker, 'args' => [])['retry']
+      assert_equal 2, Sidekiq::Client.new.send(:normalize_item, 'class' => CWorker, 'args' => [])['retry']
     end
   end
 end

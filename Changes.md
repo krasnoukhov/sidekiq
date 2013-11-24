@@ -1,3 +1,60 @@
+2.16.1
+-----------
+
+- Revert usage of `resolv-replace`.  MRI's native DNS lookup releases the GIL.
+- Fix several Capistrano 3 issues
+- Escaping dynamic data like job args and error messages in Sidekiq Web UI. [#1299, lian]
+
+2.16.0
+-----------
+
+- Deprecate `Sidekiq::Client.registered_workers` and `Sidekiq::Client.registered_queues`
+- Refactor Sidekiq::Client to be instance-based [#1279]
+- Pass all Redis options to the Redis driver so Unix sockets
+  can be fully configured. [#1270, salimane]
+- Allow sidekiq-web extensions to add locale paths so extensions
+  can be localized. [#1261, ondrejbartas]
+- Capistrano 3 support [#1254, phallstrom]
+- Use Ruby's `resolv-replace` to enable pure Ruby DNS lookups.
+  This ensures that any DNS resolution that takes place in worker
+  threads won't lock up the entire VM on MRI. [#1258]
+
+2.15.2
+-----------
+
+- Iterating over Sidekiq::Queue and Sidekiq::SortedSet will now work as
+  intended when jobs are deleted [#866, aackerman]
+- A few more minor Web UI fixes [#1247]
+
+2.15.1
+-----------
+
+- Fix several Web UI issues with the Bootstrap 3 upgrade.
+
+2.15.0
+-----------
+
+- The Core Sidekiq actors are now monitored.  If any crash, the
+  Sidekiq process logs the error and exits immediately.  This is to
+  help prevent "stuck" Sidekiq processes which are running but don't
+  appear to be doing any work. [#1194]
+- Sidekiq's testing behavior is now dynamic.  You can choose between
+  `inline` and `fake` behavior in your tests. See
+[Testing](https://github.com/mperham/sidekiq/wiki/Testing) for detail. [#1193]
+- The Retries table has a new column for the error message.
+- The Web UI topbar now contains the status and live poll button.
+- Orphaned worker records are now auto-vacuumed when you vist the
+  Workers page in the Web UI.
+- Sidekiq.default\_worker\_options allows you to configure default
+  options for all Sidekiq worker types.
+
+```ruby
+Sidekiq.default_worker_options = { 'queue' => 'default', 'backtrace' => true }
+```
+- Added two Sidekiq::Client class methods for compatibility with resque-scheduler:
+  `enqueue_to_in` and `enqueue_in` [#1212]
+- Upgrade Web UI to Bootstrap 3.0. [#1211, jeffboek]
+
 2.14.1
 -----------
 

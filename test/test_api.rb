@@ -1,6 +1,6 @@
 require 'helper'
 
-class TestApi < Minitest::Test
+class TestApi < Sidekiq::Test
   describe "stats" do
     before do
       Sidekiq.redis {|c| c.flushdb }
@@ -190,6 +190,26 @@ class TestApi < Minitest::Test
       refute_nil job
       assert_equal job_id, job.jid
       assert_in_delta job.latency, 0.0, 0.01
+    end
+
+    it 'can remove jobs when iterating over a sorted set' do
+      # scheduled jobs must be greater than SortedSet#each underlying page size
+      51.times do
+        ApiWorker.perform_in(100, 'aaron')
+      end
+      set = Sidekiq::ScheduledSet.new
+      set.map(&:delete)
+      assert_equal set.size, 0
+    end
+
+    it 'can remove jobs when iterating over a queue' do
+      # initial queue size must be greater than Queue#each underlying page size
+      51.times do
+        ApiWorker.perform_async(1, 'aaron')
+      end
+      q = Sidekiq::Queue.new
+      q.map(&:delete)
+      assert_equal q.size, 0
     end
 
     it 'can find job by id in queues' do
