@@ -1,5 +1,6 @@
 require 'connection_pool'
 require 'redis'
+require 'uri'
 
 module Sidekiq
   class RedisConnection
@@ -10,7 +11,7 @@ module Sidekiq
         if url
           options[:url] = url
         end
-        
+
         # need a connection for Fetcher and Retry
         size = options[:size] || (Sidekiq.server? ? (Sidekiq.options[:concurrency] + 2) : 5)
         pool_timeout = options[:pool_timeout] || 1
@@ -53,18 +54,23 @@ module Sidekiq
       end
 
       def log_info(options)
+        # Don't log Redis AUTH password
+        scrubbed_options = options.dup
+        if scrubbed_options[:url] && (uri = URI.parse(scrubbed_options[:url])) && uri.password
+          uri.password = "REDACTED"
+          scrubbed_options[:url] = uri.to_s
+        end
         if Sidekiq.server?
-          Sidekiq.logger.info("Booting Sidekiq #{Sidekiq::VERSION} with redis options #{options}")
+          Sidekiq.logger.info("Booting Sidekiq #{Sidekiq::VERSION} with redis options #{scrubbed_options}")
         else
-          Sidekiq.logger.info("#{Sidekiq::NAME} client with redis options #{options}")
+          Sidekiq.logger.info("#{Sidekiq::NAME} client with redis options #{scrubbed_options}")
         end
       end
 
       def determine_redis_provider
         # REDISTOGO_URL is only support for legacy reasons
-        return ENV['REDISTOGO_URL'] if ENV['REDISTOGO_URL']
         provider = ENV['REDIS_PROVIDER'] || 'REDIS_URL'
-        ENV[provider]
+        ENV[provider] || ENV['REDISTOGO_URL']
       end
 
     end

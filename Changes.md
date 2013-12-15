@@ -1,3 +1,22 @@
+2.17.1
+-----------
+
+- Expose `delay` extension as `sidekiq_delay` also.  This allows you to
+  run Delayed::Job and Sidekiq in the same process, selectively porting
+  `delay` calls to `sidekiq_delay`.  You just need to ensure that
+  Sidekiq is required **before** Delayed::Job in your Gemfile. [#1393]
+- Bump redis client required version to 3.0.6
+- Minor CSS fixes for Web UI
+
+2.17.0
+-----------
+
+- Change `Sidekiq::Client#push_bulk` to return an array of pushed `jid`s. [#1315, barelyknown]
+- Web UI refactoring to use more API internally (yummy dogfood!)
+- Much faster Sidekiq::Job#delete performance for larger queue sizes
+- Further capistrano 3 fixes
+- Many misc minor fixes
+
 2.16.1
 -----------
 

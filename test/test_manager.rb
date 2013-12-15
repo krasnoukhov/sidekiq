@@ -11,7 +11,7 @@ class TestManager < Sidekiq::Test
     end
 
     it 'assigns work to a processor' do
-      uow = Minitest::Mock.new
+      uow = Object.new
       processor = Minitest::Mock.new
       processor.expect(:async, processor, [])
       processor.expect(:process, nil, [uow])
@@ -29,6 +29,7 @@ class TestManager < Sidekiq::Test
       uow.expect(:requeue, nil, [])
 
       mgr = Sidekiq::Manager.new(options)
+      mgr.fetcher = Sidekiq::BasicFetch.new({:queues => []})
       mgr.stop
       mgr.assign(uow)
       uow.verify
@@ -36,6 +37,7 @@ class TestManager < Sidekiq::Test
 
     it 'shuts down the system' do
       mgr = Sidekiq::Manager.new(options)
+      mgr.fetcher = Sidekiq::BasicFetch.new({:queues => []})
       mgr.stop
 
       assert mgr.busy.empty?
