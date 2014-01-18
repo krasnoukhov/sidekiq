@@ -1,3 +1,16 @@
+2.17.3
+-----------
+
+- Synchronously shut down Fetcher and Poller to ensure they don't deliver
+  jobs after Manager is shut down. [#1423]
+
+2.17.2
+-----------
+
+- Fix race condition in bulk requeue during shutdown [#1406]
+- Fix bug where strictly prioritized queues might be processed out of
+  order [#1408]
+
 2.17.1
 -----------
 

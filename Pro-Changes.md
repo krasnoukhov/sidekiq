@@ -3,6 +3,13 @@ Sidekiq Pro Changelog
 
 Please see [http://sidekiq.org/pro](http://sidekiq.org/pro) for more details and how to buy.
 
+1.4.1
+-----------
+
+- Add batch progress bar to batch detail page. [#1398]
+- Fix race condition in initializing Lua scripts
+
+
 1.4.0
 -----------
 
