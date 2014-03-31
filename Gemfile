@@ -7,3 +7,12 @@ platforms :rbx do
   gem 'minitest'                 # if using minitest
   gem 'rubinius-developer_tools' # if using any of coverage, debugger, profiler
 end
+
+platforms :ruby do
+  gem 'sqlite3'
+end
+
+platforms :jruby do
+  gem 'jruby-openssl'
+  gem 'activerecord-jdbcsqlite3-adapter'
+end

@@ -36,6 +36,8 @@ module Sidekiq
       watchdog('Launcher#run') do
         manager.async.start
         poller.async.poll(true)
+
+        start_heartbeat
       end
     end
 
@@ -51,12 +53,37 @@ module Sidekiq
 
         # Requeue everything in case there was a worker who grabbed work while stopped
         Sidekiq::Fetcher.strategy.bulk_requeue([], @options)
+
+        stop_heartbeat
       end
     end
 
-    def procline(tag)
-      $0 = manager.procline(tag)
-      manager.after(5) { procline(tag) }
+    private
+
+    def start_heartbeat
+      key = identity
+      data = {
+        'hostname' => hostname,
+        'started_at' => Time.now.to_f,
+        'pid' => $$,
+        'tag' => @options[:tag] || '',
+        'concurrency' => @options[:concurrency],
+        'queues' => @options[:queues].uniq,
+      }
+      Sidekiq.redis do |conn|
+        conn.multi do
+          conn.sadd('processes', key)
+          conn.hset(key, 'info', Sidekiq.dump_json(data))
+          conn.expire(key, 60)
+        end
+      end
+      manager.heartbeat(key, data)
+    end
+
+    def stop_heartbeat
+      Sidekiq.redis do |conn|
+        conn.srem('processes', identity)
+      end
     end
   end
 end

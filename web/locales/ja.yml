@@ -12,15 +12,14 @@ ja:
   Scheduled: 予定
   Retries: 再試行
   Enqueued: 待機状態
-  ClearWorkerList: 動作中の作業を停止
   Worker: 動作中の作業
-  Workers: 動作中の作業
   LivePoll: ポーリング開始
   StopPolling: ポーリング停止
   Queue: キュー
   Class: クラス
   Job: ジョブ
   Arguments: 引数
+  Extras: エクストラ
   Started: 開始
   ShowAll: 全て見せる
   CurrentMessagesInQueue: <span class='title'>%{queue}</span>に メッセージがあります
@@ -61,3 +60,10 @@ ja:
   SixMonths: 6 ヶ月
   Batches: バッチ
   Failures: 失敗
+  DeadJobs: 死んだジョブ
+  NoDeadJobsFound: 死んだジョブはありません
+  Dead: 死んだ
+  Processes: プロセス
+  Thread: スレッド
+  Threads: スレッド
+  Jobs: ジョブ

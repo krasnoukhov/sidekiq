@@ -43,17 +43,29 @@ module Sidekiq
     end
 
     def run
+      # Print logo and banner for development
+      if environment == 'development' && $stdout.tty?
+        puts "\e[#{31}m"
+        puts Sidekiq::BANNER
+        puts "\e[0m"
+      end
+
       self_read, self_write = IO.pipe
 
       %w(INT TERM USR1 USR2 TTIN).each do |sig|
-        trap sig do
-          self_write.puts(sig)
+        begin
+          trap sig do
+            self_write.puts(sig)
+          end
+        rescue ArgumentError
+          puts "Signal #{sig} not supported"
         end
       end
 
-      redis {} # noop to connect redis and print info
       logger.info "Running in #{RUBY_DESCRIPTION}"
       logger.info Sidekiq::LICENSE
+
+      fire_event(:startup)
 
       if !options[:daemon]
         logger.info 'Starting processing, hit Ctrl-C to stop'
@@ -61,13 +73,8 @@ module Sidekiq
 
       require 'sidekiq/launcher'
       @launcher = Sidekiq::Launcher.new(options)
-      launcher.procline(options[:tag] ? "#{options[:tag]} " : '')
 
       begin
-        if options[:profile]
-          require 'ruby-prof'
-          RubyProf.start
-        end
         launcher.run
 
         while readable_io = IO.select([self_read])
@@ -77,6 +84,7 @@ module Sidekiq
       rescue Interrupt
         logger.info 'Shutting down'
         launcher.stop
+        fire_event(:shutdown)
         # Explicitly exit so busy Processor threads can't block
         # process shutdown.
         exit(0)
@@ -85,17 +93,20 @@ module Sidekiq
 
     private
 
+    def fire_event(event)
+      Sidekiq.options[:lifecycle_events][event].each do |block|
+        begin
+          block.call
+        rescue => ex
+          handle_exception(ex, { :event => event })
+        end
+      end
+    end
+
     def handle_signal(sig)
       Sidekiq.logger.debug "Got #{sig} signal"
       case sig
       when 'INT'
-        if Sidekiq.options[:profile]
-          result = RubyProf.stop
-          printer = RubyProf::GraphHtmlPrinter.new(result)
-          File.open("profile.html", 'w') do |f|
-            printer.print(f, :min_percent => 1)
-          end
-        end
         # Handle Ctrl-C in JRuby like MRI
         # http://jira.codehaus.org/browse/JRUBY-4637
         raise Interrupt
@@ -105,10 +116,11 @@ module Sidekiq
       when 'USR1'
         Sidekiq.logger.info "Received USR1, no longer accepting new work"
         launcher.manager.async.stop
+        fire_event(:quiet)
       when 'USR2'
         if Sidekiq.options[:logfile]
           Sidekiq.logger.info "Received USR2, reopening log file"
-          initialize_logger
+          Sidekiq::Logging.reopen_logs
         end
       when 'TTIN'
         Thread.list.each do |thread|
@@ -179,7 +191,7 @@ module Sidekiq
 
       cfile = opts[:config_file]
       opts = parse_config(cfile).merge(opts) if cfile
-      
+
       opts[:strict] = true if opts[:strict].nil?
 
       options.merge!(opts)
@@ -259,10 +271,6 @@ module Sidekiq
           opts[:index] = Integer(arg.match(/\d+/)[0])
         end
 
-        o.on '-p', '--profile', "Profile all code run by Sidekiq" do |arg|
-          opts[:profile] = arg
-        end
-
         o.on "-q", "--queue QUEUE[,WEIGHT]", "Queues to process with optional weights" do |arg|
           queue, weight = arg.split(",")
           parse_queue opts, queue, weight
@@ -304,19 +312,23 @@ module Sidekiq
         die 1
       end
       @parser.parse!(argv)
+      opts[:config_file] ||= 'config/sidekiq.yml' if File.exist?('config/sidekiq.yml')
       opts
     end
 
     def initialize_logger
       Sidekiq::Logging.initialize_logger(options[:logfile]) if options[:logfile]
 
-      Sidekiq.logger.level = Logger::DEBUG if options[:verbose]
+      Sidekiq.logger.level = ::Logger::DEBUG if options[:verbose]
     end
 
     def write_pid
       if path = options[:pidfile]
         File.open(path, 'w') do |f|
           f.puts Process.pid
+        end
+        at_exit do
+          FileUtils.rm_f path
         end
       end
     end

@@ -12,6 +12,8 @@ module Sidekiq
 
     TIMEOUT = 1
 
+    attr_reader :down
+
     def initialize(mgr, options)
       @down = nil
       @mgr = mgr
@@ -52,6 +54,12 @@ module Sidekiq
       end
     end
 
+    private
+
+    def pause
+      sleep(TIMEOUT)
+    end
+
     def handle_fetch_exception(ex)
       if !@down
         logger.error("Error fetching message: #{ex}")
@@ -60,7 +68,7 @@ module Sidekiq
         end
       end
       @down ||= Time.now
-      sleep(TIMEOUT)
+      pause
       after(0) { fetch }
     rescue Task::TerminatedError
       # If redis is down when we try to shut down, all the fetch backlog
@@ -72,6 +80,10 @@ module Sidekiq
     # its mailbox when shutdown starts.
     def self.done!
       @done = true
+    end
+
+    def self.reset # testing only
+      @done = nil
     end
 
     def self.done?
@@ -137,10 +149,10 @@ module Sidekiq
       end
     end
 
-    # Creating the Redis#blpop command takes into account any
-    # configured queue weights. By default Redis#blpop returns
+    # Creating the Redis#brpop command takes into account any
+    # configured queue weights. By default Redis#brpop returns
     # data from the first queue that has pending elements. We
-    # recreate the queue command each time we invoke Redis#blpop
+    # recreate the queue command each time we invoke Redis#brpop
     # to honor weights and avoid queue starvation.
     def queues_cmd
       queues = @strictly_ordered_queues ? @unique_queues.dup : @queues.shuffle.uniq

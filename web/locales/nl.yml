@@ -12,15 +12,14 @@ nl:
   Scheduled: Gepland
   Retries: Opnieuw proberen
   Enqueued: In de wachtrij
-  ClearWorkerList: Werkerlijst legen
   Worker: Werker
-  Workers: Werkers
   LivePoll: Live bijwerken
   StopPolling: Stop live bijwerken
   Queue: Wachtrij
   Class: Klasse
   Job: Taak
   Arguments: Argumenten
+  Extras: Extra's
   Started: Gestart
   ShowAll: Toon alle
   CurrentMessagesInQueue: Aantal berichten in <span class='title'>%{queue}</span>
@@ -59,5 +58,11 @@ nl:
   OneMonth: 1 maand
   ThreeMonths: 3 maanden
   SixMonths: 6 maanden
-  Batches: Batches
   Failures: Mislukt
+  DeadJobs: Overleden taken
+  NoDeadJobsFound: Geen overleden taken gevonden
+  Dead: Overleden
+  Processes: Processen
+  Thread: Thread
+  Threads: Threads
+  Jobs: Taken

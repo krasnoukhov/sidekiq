@@ -3,6 +3,36 @@ Sidekiq Pro Changelog
 
 Please see [http://sidekiq.org/pro](http://sidekiq.org/pro) for more details and how to buy.
 
+HEAD
+-----------
+
+- Compatible with Sidekiq 3.
+
+1.5.1
+-----------
+
+- Due to a breaking API change in Sidekiq 3.0, this version is limited
+  to Sidekiq 2.x.
+
+1.5.0
+-----------
+
+- Compatible with upcoming Sidekiq 3.0 release
+- Fix issue on Heroku where reliable fetch could orphan jobs [#1573]
+
+
+1.4.3
+-----------
+
+- Reverse sorting of Batches in Web UI [#1098]
+- Refactoring for Sidekiq 3.0, Pro now requires Sidekiq 2.17.5
+
+1.4.2
+-----------
+
+- Tolerate expired Batches in the web UI.
+- Fix 100% CPU usage when using weighted queues and reliable fetch.
+
 1.4.1
 -----------
 

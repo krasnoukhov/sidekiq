@@ -20,10 +20,12 @@ class TestClient < Sidekiq::Test
       def @redis.with; yield self; end
       def @redis.exec; true; end
       Sidekiq.instance_variable_set(:@redis, @redis)
+      Sidekiq::Client.instance_variable_set(:@default, nil)
     end
 
     after do
       Sidekiq.instance_variable_set(:@redis, REDIS)
+      Sidekiq::Client.instance_variable_set(:@default, nil)
     end
 
     it 'raises ArgumentError with invalid params' do
@@ -59,7 +61,7 @@ class TestClient < Sidekiq::Test
       it 'allows local middleware modification' do
         @redis.expect :lpush, 1, ['queue:default', Array]
         $called = false
-        mware = Class.new { def call(worker_klass,msg,q); $called = true; msg;end }
+        mware = Class.new { def call(worker_klass,msg,q,r); $called = true; msg;end }
         client = Sidekiq::Client.new
         client.middleware do |chain|
           chain.add mware
@@ -177,7 +179,7 @@ class TestClient < Sidekiq::Test
     end
     it 'returns the jids for the jobs' do
       Sidekiq::Client.push_bulk('class' => 'QueuedWorker', 'args' => (1..2).to_a.map { |x| Array(x) }).each do |jid|
-        assert_match /[0-9a-f]{12}/, jid
+        assert_match(/[0-9a-f]{12}/, jid)
       end
     end
   end
@@ -198,7 +200,8 @@ class TestClient < Sidekiq::Test
   describe 'client middleware' do
 
     class Stopper
-      def call(worker_class, message, queue)
+      def call(worker_class, message, queue, r)
+        raise ArgumentError unless r
         yield if message['args'].first.odd?
       end
     end
@@ -207,9 +210,9 @@ class TestClient < Sidekiq::Test
       Sidekiq.client_middleware.add Stopper
       begin
         assert_equal nil, Sidekiq::Client.push('class' => MyWorker, 'args' => [0])
-        assert_match /[0-9a-f]{12}/, Sidekiq::Client.push('class' => MyWorker, 'args' => [1])
+        assert_match(/[0-9a-f]{12}/, Sidekiq::Client.push('class' => MyWorker, 'args' => [1]))
         Sidekiq::Client.push_bulk('class' => MyWorker, 'args' => [[0], [1]]).each do |jid|
-          assert_match /[0-9a-f]{12}/, jid
+          assert_match(/[0-9a-f]{12}/, jid)
         end
       ensure
         Sidekiq.client_middleware.remove Stopper
@@ -226,11 +229,47 @@ class TestClient < Sidekiq::Test
 
   describe 'item normalization' do
     it 'defaults retry to true' do
-      assert_equal true, Sidekiq::Client.new.send(:normalize_item, 'class' => QueuedWorker, 'args' => [])['retry']
+      assert_equal true, Sidekiq::Client.new.__send__(:normalize_item, 'class' => QueuedWorker, 'args' => [])['retry']
     end
 
     it "does not normalize numeric retry's" do
-      assert_equal 2, Sidekiq::Client.new.send(:normalize_item, 'class' => CWorker, 'args' => [])['retry']
+      assert_equal 2, Sidekiq::Client.new.__send__(:normalize_item, 'class' => CWorker, 'args' => [])['retry']
+    end
+  end
+
+  describe 'sharding' do
+    class DWorker < BaseWorker
+    end
+    it 'allows sidekiq_options to point to different Redi' do
+      conn = MiniTest::Mock.new
+      conn.expect(:multi, [0, 1])
+      DWorker.sidekiq_options('pool' => ConnectionPool.new(size: 1) { conn })
+      DWorker.perform_async(1,2,3)
+      conn.verify
+    end
+    it 'allows #via to point to different Redi' do
+      conn = MiniTest::Mock.new
+      conn.expect(:multi, [0, 1])
+      default = Sidekiq::Client.new.redis_pool
+      sharded_pool = ConnectionPool.new(size: 1) { conn }
+      Sidekiq::Client.via(sharded_pool) do
+        CWorker.perform_async(1,2,3)
+        assert_equal sharded_pool, Sidekiq::Client.new.redis_pool
+        assert_raises RuntimeError do
+          Sidekiq::Client.via(default) do
+            # nothing
+          end
+        end
+      end
+      assert_equal default, Sidekiq::Client.new.redis_pool
+      conn.verify
+    end
+    it 'allows Resque helpers to point to different Redi' do
+      conn = MiniTest::Mock.new
+      conn.expect(:zadd, 1, [String, Array])
+      DWorker.sidekiq_options('pool' => ConnectionPool.new(size: 1) { conn })
+      Sidekiq::Client.enqueue_in(10, DWorker, 3)
+      conn.verify
     end
   end
 end

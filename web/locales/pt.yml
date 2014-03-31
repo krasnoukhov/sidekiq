@@ -13,7 +13,6 @@ pt:
   Retries: Tentativas
   Enqueued: Em espera
   Worker: Worker
-  Workers: Workers
   LivePoll: Live Poll
   StopPolling: Desactivar Live Poll
   Queue: Fila
@@ -58,3 +57,11 @@ pt:
   OneMonth: 1 mês
   ThreeMonths: 3 meses
   SixMonths: 6 meses
+  Failures: Falhas
+  DeadJobs: Tarefas mortas
+  NoDeadJobsFound: Não foram encontradas tarefas mortas
+  Dead: Morto
+  Processes: Processos
+  Thread: Thread
+  Threads: Threads
+  Jobs: Tarefas

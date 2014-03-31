@@ -31,40 +31,19 @@ module Sidekiq
 
     def t(msg, options={})
       string = get_locale[msg] || msg
-      string % options
-    end
-
-    def reset_worker_list
-      Sidekiq.redis do |conn|
-        workers = conn.smembers('workers')
-        conn.srem('workers', workers) if !workers.empty?
+      if options.empty?
+        string
+      else
+        string % options
       end
     end
 
     def workers_size
-      @workers_size ||= Sidekiq.redis do |conn|
-        conn.scard('workers')
-      end
+      @workers_size ||= workers.size
     end
 
     def workers
-      @workers ||= begin
-        to_rem = []
-        workers = Sidekiq.redis do |conn|
-          conn.smembers('workers').map do |w|
-            msg = conn.get("worker:#{w}")
-            msg ? [w, Sidekiq.load_json(msg)] : (to_rem << w; nil)
-          end.compact.sort { |x| x[1] ? -1 : 1 }
-        end
-
-        # Detect and clear out any orphaned worker records.
-        # These can be left in Redis if Sidekiq crashes hard
-        # while processing jobs.
-        if to_rem.size > 0
-          Sidekiq.redis { |conn| conn.srem('workers', to_rem) }
-        end
-        workers
-      end
+      @workers ||= Sidekiq::Workers.new
     end
 
     def stats

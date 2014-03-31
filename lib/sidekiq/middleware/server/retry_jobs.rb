@@ -75,10 +75,10 @@ module Sidekiq
           msg['error_message'] = e.message
           msg['error_class'] = e.class.name
           count = if msg['retry_count']
-            msg['retried_at'] = Time.now.utc
+            msg['retried_at'] = Time.now.to_f
             msg['retry_count'] += 1
           else
-            msg['failed_at'] = Time.now.utc
+            msg['failed_at'] = Time.now.to_f
             msg['retry_count'] = 0
           end
 
@@ -108,17 +108,33 @@ module Sidekiq
 
         private
 
+        DEAD_JOB_TIMEOUT = 180 * 24 * 60 * 60 # 6 months
+        MAX_JOBS = 10_000
+
         def retries_exhausted(worker, msg)
           logger.debug { "Dropping message after hitting the retry maximum: #{msg}" }
-          if worker.respond_to?(:retries_exhausted)
-            logger.warn { "Defining #{worker.class.name}#retries_exhausted as a method is deprecated, use `sidekiq_retries_exhausted` callback instead http://git.io/Ijju8g" }
-            worker.retries_exhausted(*msg['args'])
-          elsif worker.sidekiq_retries_exhausted_block?
-            worker.sidekiq_retries_exhausted_block.call(msg)
+          begin
+            if worker.sidekiq_retries_exhausted_block?
+              worker.sidekiq_retries_exhausted_block.call(msg)
+            end
+          rescue => e
+            handle_exception(e, { :context => "Error calling retries_exhausted" })
           end
 
-        rescue Exception => e
-          handle_exception(e, { :context => "Error calling retries_exhausted" })
+          send_to_morgue(msg)
+        end
+
+        def send_to_morgue(msg)
+          Sidekiq.logger.info { "Adding dead #{msg['class']} job #{msg['jid']}" }
+          payload = Sidekiq.dump_json(msg)
+          now = Time.now.to_f
+          Sidekiq.redis do |conn|
+            conn.multi do
+              conn.zadd('dead', now, payload)
+              conn.zremrangebyscore('dead', '-inf', now - DEAD_JOB_TIMEOUT)
+              conn.zremrangebyrank('dead', 0, -MAX_JOBS)
+            end
+          end
         end
 
         def retry_attempts_from(msg_retry, default)

@@ -1,15 +1,118 @@
+3.0.0
+-----------
+
+**Not yet released**
+
+Please see [3.0-Upgrade.md](3.0-Upgrade.md) for more comprehensive upgrade notes.
+
+- **Dead Job Queue** - jobs which run out of retries are now moved to a dead
+  job queue.  These jobs must be retried manually or they will expire
+  after 6 months or 10,000 jobs.  The Web UI contains a "Dead" tab
+  exposing these jobs.  Use `sidekiq_options :retry => false` if you
+don't wish jobs to be retried or put in the DJQ.  Use
+`sidekiq_options :retry => 0` if you don't want jobs to retry but go
+straight to the DJQ.
+- **Process Lifecycle Events** - you can now register blocks to run at
+  certain points during the Sidekiq process lifecycle: startup, quiet and
+  shutdown.
+```ruby
+Sidekiq.configure_server do |config|
+  config.on(:startup) do
+    # do something
+  end
+end
+```
+- **Global Error Handlers** - blocks of code which handle errors that
+  occur anywhere within Sidekiq, not just within middleware.
+```ruby
+Sidekiq.configure_server do |config|
+  config.error_handlers << Proc.new {|ex,ctx| ... }
+end
+```
+- **Process Heartbeat** - each Sidekiq process will ping Redis every 5
+  seconds to give a summary of the Sidekiq population at work.
+- The Workers tab is now renamed to Busy and contains a list of live
+  Sidekiq processes and jobs in progress based on the heartbeat.
+- **Shardable Client** - Sidekiq::Client instances can use a custom
+  Redis connection pool, allowing very large Sidekiq installations to scale by
+  sharding: sending different jobs to different Redis instances.
+```ruby
+client = Sidekiq::Client.new(ConnectionPool.new { Redis.new })
+client.push(...)
+```
+```ruby
+Sidekiq::Client.via(ConnectionPool.new { Redis.new }) do
+  FooWorker.perform_async
+  BarWorker.perform_async
+end
+```
+  **Sharding support does require a breaking change to client-side
+middleware, see 3.0-Upgrade.md.**
+- New Chinese, Greek, Swedish and Czech translations for the Web UI.
+- Updated most languages translations for the new UI features.
+- **Remove official Capistrano integration** - this integration has been
+  moved into the [capistrano-sidekiq](https://github.com/seuros/capistrano-sidekiq) gem.
+- **Remove official support for MRI 1.9** - Things still might work but
+  I no longer actively test on it.
+- **Remove built-in support for Redis-to-Go**.
+  Heroku users: `heroku config:set REDIS_PROVIDER=REDISTOGO_URL`
+- **Remove built-in error integration for Airbrake, Honeybadger, ExceptionNotifier and Exceptional**.
+  Each error gem should provide its own Sidekiq integration.  Update your error gem to the latest
+  version to pick up Sidekiq support.
+- Upgrade to connection\_pool 2.0 which now creates connections lazily.
+- Remove deprecated Sidekiq::Client.registered\_\* APIs
+- Remove deprecated support for the old Sidekiq::Worker#retries\_exhausted method.
+- Removed 'sidekiq/yaml\_patch', this was never documented or recommended.
+- Removed --profile option, #1592
+- Remove usage of the term 'Worker' in the UI for clarity.  Users would call both threads and
+  processes 'workers'.  Instead, use "Thread", "Process" or "Job".
+
+2.17.7
+-----------
+
+- Auto-prune jobs older than one hour from the Workers page [#1508]
+- Add Sidekiq::Workers#prune which can perform the auto-pruning.
+- Fix issue where a job could be lost when an exception occurs updating
+  Redis stats before the job executes [#1511]
+
+2.17.6
+-----------
+
+- Fix capistrano integration due to missing pidfile. [#1490]
+
+2.17.5
+-----------
+
+- Automatically use the config file found at `config/sidekiq.yml`, if not passed `-C`. [#1481]
+- Store 'retried\_at' and 'failed\_at' timestamps as Floats, not Strings. [#1473]
+- A `USR2` signal will now reopen _all_ logs, using IO#reopen. Thus, instead of creating a new Logger object,
+  Sidekiq will now just update the existing Logger's file descriptor [#1163].
+- Remove pidfile when shutting down if started with `-P` [#1470]
+
+2.17.4
+-----------
+
+- Fix JID support in inline testing, #1454
+- Polish worker arguments display in UI, #1453
+- Marshal arguments fully to avoid worker mutation, #1452
+- Support reverse paging sorted sets, #1098
+
+
 2.17.3
 -----------
 
-- Synchronously shut down Fetcher and Poller to ensure they don't deliver
-  jobs after Manager is shut down. [#1423]
+- Synchronously terminates the poller and fetcher to fix a race condition in bulk requeue during shutdown [#1406]
 
 2.17.2
 -----------
 
-- Fix race condition in bulk requeue during shutdown [#1406]
 - Fix bug where strictly prioritized queues might be processed out of
-  order [#1408]
+  order [#1408]. A side effect of this change is that it breaks a queue
+  declaration syntax that worked, although only because of a bug—it was
+  never intended to work and never supported. If you were declaring your
+  queues as a  comma-separated list, e.g. `sidekiq -q critical,default,low`,
+  you must now use the `-q` flag before each queue, e.g.
+  `sidekiq -q critical -q default -q low`.
 
 2.17.1
 -----------

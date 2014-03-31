@@ -11,7 +11,9 @@ module Sidekiq
   # processes it.  It instantiates the worker, runs the middleware
   # chain and then calls Sidekiq::Worker#perform.
   class Processor
-    STATS_TIMEOUT = 180 * 24 * 60 * 60
+    # To prevent a memory leak, ensure that stats expire. However, they should take up a minimal amount of storage
+    # so keep them around for a long time
+    STATS_TIMEOUT = 24 * 60 * 60 * 365 * 5
 
     include Util
     include Actor
@@ -34,32 +36,30 @@ module Sidekiq
       msgstr = work.message
       queue = work.queue_name
 
-      do_defer do
-        @boss.async.real_thread(proxy_id, Thread.current)
+      @boss.async.real_thread(proxy_id, Thread.current)
 
-        ack = true
-        begin
-          msg = Sidekiq.load_json(msgstr)
-          klass  = msg['class'].constantize
-          worker = klass.new
-          worker.jid = msg['jid']
+      ack = true
+      begin
+        msg = Sidekiq.load_json(msgstr)
+        klass  = msg['class'].constantize
+        worker = klass.new
+        worker.jid = msg['jid']
 
-          stats(worker, msg, queue) do
-            Sidekiq.server_middleware.invoke(worker, msg, queue) do
-              worker.perform(*cloned(msg['args']))
-            end
+        stats(worker, msg, queue) do
+          Sidekiq.server_middleware.invoke(worker, msg, queue) do
+            worker.perform(*cloned(msg['args']))
           end
-        rescue Sidekiq::Shutdown
-          # Had to force kill this job because it didn't finish
-          # within the timeout.  Don't acknowledge the work since
-          # we didn't properly finish it.
-          ack = false
-        rescue Exception => ex
-          handle_exception(ex, msg || { :message => msgstr })
-          raise
-        ensure
-          work.acknowledge if ack
         end
+      rescue Sidekiq::Shutdown
+        # Had to force kill this job because it didn't finish
+        # within the timeout.  Don't acknowledge the work since
+        # we didn't properly finish it.
+        ack = false
+      rescue Exception => ex
+        handle_exception(ex, msg || { :message => msgstr })
+        raise
+      ensure
+        work.acknowledge if ack
       end
 
       @boss.async.processor_done(current_actor)
@@ -71,59 +71,48 @@ module Sidekiq
 
     private
 
-    # We use Celluloid's defer to workaround tiny little
-    # Fiber stacks (4kb!) in MRI 1.9.
-    #
-    # For some reason, Celluloid's thread dispatch, TaskThread,
-    # is unstable under heavy concurrency but TaskFiber has proven
-    # itself stable.
-    NEED_DEFER = (RUBY_ENGINE == 'ruby' && RUBY_VERSION < '2.0.0')
-
-    def do_defer(&block)
-      if NEED_DEFER
-        defer(&block)
-      else
-        yield
-      end
-    end
-
-    def identity
-      @str ||= "#{hostname}:#{process_id}-#{Thread.current.object_id}:default"
+    def thread_identity
+      @str ||= Thread.current.object_id.to_s(36)
     end
 
     def stats(worker, msg, queue)
-      redis do |conn|
-        conn.multi do
-          conn.sadd('workers', identity)
-          conn.setex("worker:#{identity}:started", EXPIRY, Time.now.to_s)
-          hash = {:queue => queue, :payload => msg, :run_at => Time.now.to_i }
-          conn.setex("worker:#{identity}", EXPIRY, Sidekiq.dump_json(hash))
+      # Do not conflate errors from the job with errors caused by updating
+      # stats so calling code can react appropriately
+      retry_and_suppress_exceptions do
+        hash = Sidekiq.dump_json({:queue => queue, :payload => msg, :run_at => Time.now.to_i })
+        Sidekiq.redis do |conn|
+          conn.multi do
+            conn.hmset("#{identity}:workers", thread_identity, hash)
+            conn.expire("#{identity}:workers", 60*60)
+          end
         end
       end
 
       begin
         yield
       rescue Exception
-        redis do |conn|
-          failed = "stat:failed:#{Time.now.utc.to_date}"
-          result = conn.multi do
-            conn.incrby("stat:failed", 1)
-            conn.incrby(failed, 1)
+        retry_and_suppress_exceptions do
+          Sidekiq.redis do |conn|
+            failed = "stat:failed:#{Time.now.utc.to_date}"
+            result = conn.multi do
+              conn.incrby("stat:failed", 1)
+              conn.incrby(failed, 1)
+            end
+            conn.expire(failed, STATS_TIMEOUT) if result.last == 1
           end
-          conn.expire(failed, STATS_TIMEOUT) if result.last == 1
         end
         raise
       ensure
-        redis do |conn|
-          processed = "stat:processed:#{Time.now.utc.to_date}"
-          result = conn.multi do
-            conn.srem("workers", identity)
-            conn.del("worker:#{identity}")
-            conn.del("worker:#{identity}:started")
-            conn.incrby("stat:processed", 1)
-            conn.incrby(processed, 1)
+        retry_and_suppress_exceptions do
+          Sidekiq.redis do |conn|
+            processed = "stat:processed:#{Time.now.utc.to_date}"
+            result = conn.multi do
+              conn.hdel("#{identity}:workers", thread_identity)
+              conn.incrby("stat:processed", 1)
+              conn.incrby(processed, 1)
+            end
+            conn.expire(processed, STATS_TIMEOUT) if result.last == 1
           end
-          conn.expire(processed, STATS_TIMEOUT) if result.last == 1
         end
       end
     end
@@ -131,12 +120,28 @@ module Sidekiq
     # Singleton classes are not clonable.
     SINGLETON_CLASSES = [ NilClass, TrueClass, FalseClass, Symbol, Fixnum, Float, Bignum ].freeze
 
-    # Clone the arguments passed to the worker so that if
+    # Deep clone the arguments passed to the worker so that if
     # the message fails, what is pushed back onto Redis hasn't
     # been mutated by the worker.
     def cloned(ary)
-      ary.map do |val|
-        SINGLETON_CLASSES.include?(val.class) ? val : val.clone
+      Marshal.load(Marshal.dump(ary))
+    end
+
+    # If an exception occurs in the block passed to this method, that block will be retried up to max_retries times.
+    # All exceptions will be swallowed and logged.
+    def retry_and_suppress_exceptions(max_retries = 2)
+      retry_count = 0
+      begin
+        yield
+      rescue => e
+        retry_count += 1
+        if retry_count <= max_retries
+          Sidekiq.logger.debug {"Suppressing and retrying error: #{e.inspect}"}
+          sleep(1)
+          retry
+        else
+          handle_exception(e, { :message => "Exhausted #{max_retries} retries"})
+        end
       end
     end
   end

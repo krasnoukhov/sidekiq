@@ -34,4 +34,22 @@ class TestSidekiq < Sidekiq::Test
       assert_equal "Calm down, bro\n", $stdout.string
     end
   end
+
+  describe 'lifecycle events' do
+    it 'handles invalid input' do
+      e = assert_raises ArgumentError do
+        Sidekiq.on(:startp)
+      end
+      assert_match(/Invalid event name/, e.message)
+      e = assert_raises ArgumentError do
+        Sidekiq.on('startup')
+      end
+      assert_match(/Symbols only/, e.message)
+      Sidekiq.on(:startup) do
+        1 + 1
+      end
+
+      assert_equal 2, Sidekiq.options[:lifecycle_events][:startup].first.call
+    end
+  end
 end

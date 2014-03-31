@@ -1,6 +1,7 @@
 require 'helper'
 
 class TestApi < Sidekiq::Test
+
   describe "stats" do
     before do
       Sidekiq.redis {|c| c.flushdb }
@@ -160,6 +161,8 @@ class TestApi < Sidekiq::Test
   end
 
   describe 'with an empty database' do
+    include Sidekiq::Util
+
     before do
       Sidekiq.redis {|c| c.flushdb }
     end
@@ -339,6 +342,23 @@ class TestApi < Sidekiq::Test
       assert_equal 0, r.size
     end
 
+    it 'can enumerate processes' do
+      odata = { 'pid' => 123, 'hostname' => hostname, 'key' => "#{hostname}:123", 'started_at' => Time.now.to_f - 15 }
+      time = Time.now.to_f
+      Sidekiq.redis do |conn|
+        conn.multi do
+          conn.sadd('processes', odata['key'])
+          conn.hmset(odata['key'], 'info', Sidekiq.dump_json(odata), 'busy', 10, 'beat', time)
+          conn.sadd('processes', 'fake:pid')
+        end
+      end
+
+      ps = Sidekiq::ProcessSet.new.to_a
+      assert_equal 1, ps.size
+      data = ps.first
+      assert_equal odata.merge('busy' => 10, 'beat' => time), data
+    end
+
     it 'can enumerate workers' do
       w = Sidekiq::Workers.new
       assert_equal 0, w.size
@@ -346,22 +366,36 @@ class TestApi < Sidekiq::Test
         assert false
       end
 
-      s = '12345'
+      key = "#{hostname}:#{$$}"
+      pdata = { 'pid' => $$, 'hostname' => hostname, 'started_at' => Time.now.to_i }
+      Sidekiq.redis do |conn|
+        conn.sadd('processes', key)
+        conn.hmset(key, 'info', Sidekiq.dump_json(pdata), 'busy', 0, 'beat', Time.now.to_f)
+      end
+
+      s = "#{key}:workers"
       data = Sidekiq.dump_json({ 'payload' => {}, 'queue' => 'default', 'run_at' => Time.now.to_i })
       Sidekiq.redis do |c|
+        c.hmset(s, '1234', data)
+      end
+
+      w.each do |p, x, y|
+        assert_equal key, p
+        assert_equal "1234", x
+        assert_equal 'default', y['queue']
+        assert_equal Time.now.year, Time.at(y['run_at']).year
+      end
+
+      s = "#{key}:workers"
+      data = Sidekiq.dump_json({ 'payload' => {}, 'queue' => 'default', 'run_at' => (Time.now.to_i - 2*60*60) })
+      Sidekiq.redis do |c|
         c.multi do
-          c.sadd('workers', s)
-          c.set("worker:#{s}", data)
-          c.set("worker:#{s}:started", Time.now.to_s)
+          c.hmset(s, '5678', data)
+          c.hmset("b#{s}", '5678', data)
         end
       end
 
-      assert_equal 1, w.size
-      w.each do |x, y, z|
-        assert_equal s, x
-        assert_equal 'default', y['queue']
-        assert_equal Time.now.year, DateTime.parse(z).year
-      end
+      assert_equal ['1234', '5678'], w.map { |_, tid, _| tid }
     end
 
     it 'can reschedule jobs' do
@@ -380,8 +414,30 @@ class TestApi < Sidekiq::Test
       assert(retries.map { |r| r.score > (Time.now.to_f + 9) }.any?)
     end
 
+    it 'prunes processes which have died' do
+      data = { 'pid' => rand(10_000), 'hostname' => "app#{rand(1_000)}", 'started_at' => Time.now.to_f }
+      key = "#{data['hostname']}:#{data['pid']}"
+      Sidekiq.redis do |conn|
+        conn.sadd('processes', key)
+        conn.hmset(key, 'info', Sidekiq.dump_json(data), 'busy', 0, 'beat', Time.now.to_f)
+      end
+
+      ps = Sidekiq::ProcessSet.new
+      assert_equal 1, ps.size
+      assert_equal 1, ps.to_a.size
+
+      Sidekiq.redis do |conn|
+        conn.sadd('processes', "bar:987")
+        conn.sadd('processes', "bar:986")
+      end
+
+      ps = Sidekiq::ProcessSet.new
+      assert_equal 3, ps.size
+      assert_equal 1, ps.to_a.size
+    end
+
     def add_retry(jid = 'bob', at = Time.now.to_f)
-      payload = Sidekiq.dump_json('class' => 'ApiWorker', 'args' => [1, 'mike'], 'queue' => 'default', 'jid' => jid, 'retry_count' => 2, 'failed_at' => Time.now.utc)
+      payload = Sidekiq.dump_json('class' => 'ApiWorker', 'args' => [1, 'mike'], 'queue' => 'default', 'jid' => jid, 'retry_count' => 2, 'failed_at' => Time.now.to_f)
       Sidekiq.redis do |conn|
         conn.zadd('retry', at.to_s, payload)
       end

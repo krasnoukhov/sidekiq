@@ -4,6 +4,7 @@ require 'sidekiq/web'
 require 'rack/test'
 
 class TestWeb < Sidekiq::Test
+
   describe 'sidekiq web' do
     include Rack::Test::Methods
 
@@ -30,18 +31,20 @@ class TestWeb < Sidekiq::Test
 
     it 'can display workers' do
       Sidekiq.redis do |conn|
-        identity = 'foo:1234-123abc:default'
-        conn.sadd('workers', identity)
-        conn.setex("worker:#{identity}:started", 10, Time.now.to_s)
+        conn.incr('busy')
+        conn.sadd('processes', 'foo:1234')
+        conn.hmset('foo:1234', 'info', Sidekiq.dump_json('hostname' => 'foo', 'started_at' => Time.now.to_f), 'at', Time.now.to_f, 'busy', 4)
+        identity = 'foo:1234:workers'
         hash = {:queue => 'critical', :payload => { 'class' => WebWorker.name, 'args' => [1,'abc'] }, :run_at => Time.now.to_i }
-        conn.setex("worker:#{identity}", 10, Sidekiq.dump_json(hash))
+        conn.hmset(identity, 1001, Sidekiq.dump_json(hash))
       end
+      assert_equal ['1001'], Sidekiq::Workers.new.map { |pid, tid, data| tid }
 
-      get '/workers'
+      get '/busy'
       assert_equal 200, last_response.status
-      assert_match /status-active/, last_response.body
-      assert_match /critical/, last_response.body
-      assert_match /WebWorker/, last_response.body
+      assert_match(/status-active/, last_response.body)
+      assert_match(/critical/, last_response.body)
+      assert_match(/WebWorker/, last_response.body)
     end
 
     it 'can display queues' do
@@ -49,8 +52,8 @@ class TestWeb < Sidekiq::Test
 
       get '/queues'
       assert_equal 200, last_response.status
-      assert_match /foo/, last_response.body
-      refute_match /HardWorker/, last_response.body
+      assert_match(/foo/, last_response.body)
+      refute_match(/HardWorker/, last_response.body)
     end
 
     it 'handles queue view' do
@@ -76,26 +79,6 @@ class TestWeb < Sidekiq::Test
       end
     end
 
-    it 'can clear an empty worker list' do
-      post '/reset'
-      assert_equal 302, last_response.status
-    end
-
-    it 'can clear a non-empty worker list' do
-      Sidekiq.redis do |conn|
-        identity = 'foo'
-        conn.sadd('workers', identity)
-      end
-
-      post '/reset'
-
-      assert_equal 302, last_response.status
-
-      Sidekiq.redis do |conn|
-        refute conn.smembers('workers').any?
-      end
-    end
-
     it 'can delete a job' do
       Sidekiq.redis do |conn|
         conn.rpush('queue:foo', "{}")
@@ -117,15 +100,15 @@ class TestWeb < Sidekiq::Test
     it 'can display retries' do
       get '/retries'
       assert_equal 200, last_response.status
-      assert_match /found/, last_response.body
-      refute_match /HardWorker/, last_response.body
+      assert_match(/found/, last_response.body)
+      refute_match(/HardWorker/, last_response.body)
 
       add_retry
 
       get '/retries'
       assert_equal 200, last_response.status
-      refute_match /found/, last_response.body
-      assert_match /HardWorker/, last_response.body
+      refute_match(/found/, last_response.body)
+      assert_match(/HardWorker/, last_response.body)
     end
 
     it 'can display a single retry' do
@@ -134,7 +117,7 @@ class TestWeb < Sidekiq::Test
       assert_equal 302, last_response.status
       get "/retries/#{job_params(*params)}"
       assert_equal 200, last_response.status
-      assert_match /HardWorker/, last_response.body
+      assert_match(/HardWorker/, last_response.body)
     end
 
     it 'handles missing retry' do
@@ -150,7 +133,7 @@ class TestWeb < Sidekiq::Test
 
       get "/retries"
       assert_equal 200, last_response.status
-      refute_match /#{params.first['args'][2]}/, last_response.body
+      refute_match(/#{params.first['args'][2]}/, last_response.body)
     end
 
     it 'can delete all retries' do
@@ -170,21 +153,21 @@ class TestWeb < Sidekiq::Test
 
       get '/queues/default'
       assert_equal 200, last_response.status
-      assert_match /#{params.first['args'][2]}/, last_response.body
+      assert_match(/#{params.first['args'][2]}/, last_response.body)
     end
 
     it 'can display scheduled' do
       get '/scheduled'
       assert_equal 200, last_response.status
-      assert_match /found/, last_response.body
-      refute_match /HardWorker/, last_response.body
+      assert_match(/found/, last_response.body)
+      refute_match(/HardWorker/, last_response.body)
 
       add_scheduled
 
       get '/scheduled'
       assert_equal 200, last_response.status
-      refute_match /found/, last_response.body
-      assert_match /HardWorker/, last_response.body
+      refute_match(/found/, last_response.body)
+      assert_match(/HardWorker/, last_response.body)
     end
 
     it 'can display a single scheduled job' do
@@ -193,7 +176,7 @@ class TestWeb < Sidekiq::Test
       assert_equal 302, last_response.status
       get "/scheduled/#{job_params(*params)}"
       assert_equal 200, last_response.status
-      assert_match /HardWorker/, last_response.body
+      assert_match(/HardWorker/, last_response.body)
     end
 
     it 'handles missing scheduled job' do
@@ -209,7 +192,7 @@ class TestWeb < Sidekiq::Test
 
       get '/queues/default'
       assert_equal 200, last_response.status
-      assert_match /#{params.first['args'][2]}/, last_response.body
+      assert_match(/#{params.first['args'][2]}/, last_response.body)
     end
 
     it 'can delete a single scheduled job' do
@@ -220,7 +203,7 @@ class TestWeb < Sidekiq::Test
 
       get "/scheduled"
       assert_equal 200, last_response.status
-      refute_match /#{params.first['args'][2]}/, last_response.body
+      refute_match(/#{params.first['args'][2]}/, last_response.body)
     end
 
     it 'can delete scheduled' do
@@ -247,12 +230,12 @@ class TestWeb < Sidekiq::Test
         assert_equal 1, q.size
         get '/queues/default'
         assert_equal 200, last_response.status
-        assert_match /#{params[0]['args'][2]}/, last_response.body
+        assert_match(/#{params[0]['args'][2]}/, last_response.body)
       end
     end
 
     it 'can retry all retries' do
-      msg, score = add_retry
+      msg = add_retry.first
       add_retry
 
       post "/retries/all/retry", 'retry' => 'Retry'
@@ -270,7 +253,7 @@ class TestWeb < Sidekiq::Test
       params = add_xss_retry
       get '/retries'
       assert_equal 200, last_response.status
-      assert_match /FailWorker/, last_response.body
+      assert_match(/FailWorker/, last_response.body)
 
       assert last_response.body.include?( "fail message: &lt;a&gt;hello&lt;&#x2F;a&gt;" )
       assert !last_response.body.include?( "fail message: <a>hello</a>" )
@@ -278,19 +261,20 @@ class TestWeb < Sidekiq::Test
       assert last_response.body.include?( "args\">&quot;&lt;a&gt;hello&lt;&#x2F;a&gt;&quot;<" )
       assert !last_response.body.include?( "args\"><a>hello</a><" )
 
-
       # on /workers page
       Sidekiq.redis do |conn|
-        identity = 'foo:1234-123abc:default'
-        conn.sadd('workers', identity)
-        conn.setex("worker:#{identity}:started", 10, Time.now.to_s)
+        pro = 'foo:1234'
+        conn.sadd('processes', pro)
+        conn.hmset(pro, 'info', Sidekiq.dump_json('started_at' => Time.now.to_f), 'busy', 1, 'beat', Time.now.to_f)
+        identity = "#{pro}:workers"
         hash = {:queue => 'critical', :payload => { 'class' => "FailWorker", 'args' => ["<a>hello</a>"] }, :run_at => Time.now.to_i }
-        conn.setex("worker:#{identity}", 10, Sidekiq.dump_json(hash))
+        conn.hmset(identity, 100001, Sidekiq.dump_json(hash))
+        conn.incr('busy')
       end
 
-      get '/workers'
+      get '/busy'
       assert_equal 200, last_response.status
-      assert_match /FailWorker/, last_response.body
+      assert_match(/FailWorker/, last_response.body)
       assert last_response.body.include?( "&lt;a&gt;hello&lt;&#x2F;a&gt;" )
       assert !last_response.body.include?( "<a>hello</a>" )
 
@@ -332,7 +316,7 @@ class TestWeb < Sidekiq::Test
         end
 
         get '/custom'
-        assert_match /Changed text/, last_response.body
+        assert_match(/Changed text/, last_response.body)
 
       ensure
         Sidekiq::Web.tabs.delete 'Custom Tab'
@@ -340,6 +324,8 @@ class TestWeb < Sidekiq::Test
     end
 
     describe 'stats' do
+      include Sidekiq::Util
+
       before do
         Sidekiq.redis do |conn|
           conn.set("stat:processed", 5)
@@ -394,6 +380,41 @@ class TestWeb < Sidekiq::Test
       end
     end
 
+    describe 'dead jobs' do
+      it 'shows empty index' do
+        get 'morgue'
+        assert_equal 200, last_response.status
+      end
+
+      it 'shows index with jobs' do
+        (_, score) = add_dead
+        get 'morgue'
+        assert_equal 200, last_response.status
+        assert_match(/#{score}/, last_response.body)
+      end
+
+      it 'can delete all dead' do
+        3.times { add_dead }
+
+        assert_equal 3, Sidekiq::DeadSet.new.size
+        post "/morgue/all/delete", 'delete' => 'Delete'
+        assert_equal 0, Sidekiq::DeadSet.new.size
+        assert_equal 302, last_response.status
+        assert_equal 'http://example.org/morgue', last_response.header['Location']
+      end
+
+      it 'can retry a dead job' do
+        params = add_dead
+        post "/morgue/#{job_params(*params)}", 'retry' => 'Retry'
+        assert_equal 302, last_response.status
+        assert_equal 'http://example.org/morgue', last_response.header['Location']
+
+        get '/queues/foo'
+        assert_equal 200, last_response.status
+        assert_match(/#{params.first['args'][2]}/, last_response.body)
+      end
+    end
+
     def add_scheduled
       score = Time.now.to_f
       msg = { 'class' => 'HardWorker',
@@ -412,11 +433,27 @@ class TestWeb < Sidekiq::Test
               'error_message' => 'Some fake message',
               'error_class' => 'RuntimeError',
               'retry_count' => 0,
-              'failed_at' => Time.now.utc,
+              'failed_at' => Time.now.to_f,
               'jid' => SecureRandom.hex(12) }
       score = Time.now.to_f
       Sidekiq.redis do |conn|
         conn.zadd('retry', score, Sidekiq.dump_json(msg))
+      end
+      [msg, score]
+    end
+
+    def add_dead
+      msg = { 'class' => 'HardWorker',
+              'args' => ['bob', 1, Time.now.to_f],
+              'queue' => 'foo',
+              'error_message' => 'Some fake message',
+              'error_class' => 'RuntimeError',
+              'retry_count' => 0,
+              'failed_at' => Time.now.utc,
+              'jid' => SecureRandom.hex(12) }
+      score = Time.now.to_f
+      Sidekiq.redis do |conn|
+        conn.zadd('dead', score, Sidekiq.dump_json(msg))
       end
       [msg, score]
     end
@@ -428,7 +465,7 @@ class TestWeb < Sidekiq::Test
               'error_message' => 'fail message: <a>hello</a>',
               'error_class' => 'RuntimeError',
               'retry_count' => 0,
-              'failed_at' => Time.now.utc,
+              'failed_at' => Time.now.to_f,
               'jid' => SecureRandom.hex(12) }
       score = Time.now.to_f
       Sidekiq.redis do |conn|
@@ -438,11 +475,14 @@ class TestWeb < Sidekiq::Test
     end
 
     def add_worker
-      process_id = rand(1000)
+      key = "#{hostname}:#{$$}"
       msg = "{\"queue\":\"default\",\"payload\":{\"retry\":true,\"queue\":\"default\",\"timeout\":20,\"backtrace\":5,\"class\":\"HardWorker\",\"args\":[\"bob\",10,5],\"jid\":\"2b5ad2b016f5e063a1c62872\"},\"run_at\":1361208995}"
       Sidekiq.redis do |conn|
-        conn.sadd("workers", "mercury.home:#{process_id}-70215157189060:started")
-        conn.set("worker:mercury.home:#{process_id}-70215157189060:started", msg)
+        conn.multi do
+          conn.sadd("processes", key)
+          conn.hmset(key, 'busy', 4)
+          conn.hmset("#{key}:workers", Time.now.to_f, msg)
+        end
       end
     end
   end

@@ -4,8 +4,6 @@ require 'sidekiq/logging'
 require 'sidekiq/client'
 require 'sidekiq/worker'
 require 'sidekiq/redis_connection'
-require 'sidekiq/util'
-require 'sidekiq/api'
 
 require 'json'
 
@@ -19,7 +17,12 @@ module Sidekiq
     :require => '.',
     :environment => nil,
     :timeout => 8,
-    :profile => false,
+    :error_handlers => [],
+    :lifecycle_events => {
+      :startup => [],
+      :quiet => [],
+      :shutdown => [],
+    },
   }
 
   def self.❨╯°□°❩╯︵┻━┻
@@ -63,17 +66,18 @@ module Sidekiq
 
   def self.redis(&block)
     raise ArgumentError, "requires a block" if !block
-    @redis ||= Sidekiq::RedisConnection.create(@hash || {})
-    @redis.with(&block)
+    redis_pool.with(&block)
+  end
+
+  def self.redis_pool
+    @redis ||= Sidekiq::RedisConnection.create
   end
 
   def self.redis=(hash)
-    return @redis = hash if hash.is_a?(ConnectionPool)
-
-    if hash.is_a?(Hash)
-      @hash = hash
+    @redis = if hash.is_a?(ConnectionPool)
+      hash
     else
-      raise ArgumentError, "redis= requires a Hash or ConnectionPool"
+      Sidekiq::RedisConnection.create(hash)
     end
   end
 
@@ -94,7 +98,7 @@ module Sidekiq
   end
 
   def self.default_worker_options
-    @default_worker_options || { 'retry' => true, 'queue' => 'default' }
+    defined?(@default_worker_options) ? @default_worker_options : { 'retry' => true, 'queue' => 'default' }
   end
 
   def self.load_json(string)
@@ -116,6 +120,44 @@ module Sidekiq
   def self.poll_interval=(interval)
     self.options[:poll_interval] = interval
   end
+
+  # Register a proc to handle any error which occurs within the Sidekiq process.
+  #
+  #   Sidekiq.configure_server do |config|
+  #     config.error_handlers << Proc.new {|ex,ctx_hash| MyErrorService.notify(ex, ctx_hash) }
+  #   end
+  #
+  # The default error handler logs errors to Sidekiq.logger.
+  def self.error_handlers
+    self.options[:error_handlers]
+  end
+
+  # Register a block to run at a point in the Sidekiq lifecycle.
+  # :startup, :quiet or :shutdown are valid events.
+  #
+  #   Sidekiq.configure_server do |config|
+  #     config.on(:shutdown) do
+  #       puts "Goodbye cruel world!"
+  #     end
+  #   end
+  def self.on(event, &block)
+    raise ArgumentError, "Symbols only please: #{event}" if !event.is_a?(Symbol)
+    raise ArgumentError, "Invalid event name: #{event}" if !options[:lifecycle_events].keys.include?(event)
+    options[:lifecycle_events][event] << block
+  end
+
+  BANNER = %q{         s
+        ss
+   sss  sss         ss
+   s  sss s   ssss sss   ____  _     _      _    _
+   s     sssss ssss     / ___|(_) __| | ___| | _(_) __ _
+  s         sss         \___ \| |/ _` |/ _ \ |/ / |/ _` |
+  s sssss  s             ___) | | (_| |  __/   <| | (_| |
+  ss    s  s            |____/|_|\__,_|\___|_|\_\_|\__, |
+  s     s s                                           |_|
+        s s
+       sss
+       sss }
 
 end
 
