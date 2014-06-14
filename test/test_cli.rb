@@ -2,38 +2,38 @@ require 'helper'
 require 'sidekiq/cli'
 require 'tempfile'
 
-cli = Sidekiq::CLI.instance
-def cli.die(code)
-  @code = code
-end
+class Sidekiq::CLI
+  def die(code)
+    @code = code
+  end
 
-def cli.valid?
-  !@code
+  def valid?
+    !@code
+  end
 end
 
 class TestCli < Sidekiq::Test
-  describe 'with cli' do
+  describe 'CLI#parse' do
 
     before do
-      @cli = Sidekiq::CLI.instance
+      @cli = Sidekiq::CLI.new
+      @opts = Sidekiq.options.dup
     end
 
-    it 'blows up with an invalid require' do
-      assert_raises ArgumentError do
-        @cli.parse(['sidekiq', '-r', 'foobar'])
-      end
+    after do
+      Sidekiq.options = @opts
     end
 
-    it 'requires the specified Ruby code' do
+    it 'does not require the specified Ruby code' do
       @cli.parse(['sidekiq', '-r', './test/fake_env.rb'])
-      assert($LOADED_FEATURES.any? { |x| x =~ /fake_env/ })
+      refute($LOADED_FEATURES.any? { |x| x =~ /fake_env/ })
       assert @cli.valid?
     end
 
-    it 'boots rails' do
+    it 'does not boot rails' do
       refute defined?(::Rails)
       @cli.parse(['sidekiq', '-r', './myapp'])
-      assert defined?(::Rails)
+      refute defined?(::Rails)
     end
 
     it 'changes concurrency' do

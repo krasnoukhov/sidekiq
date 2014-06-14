@@ -25,7 +25,7 @@ Requirements
 -----------------
 
 I test with the latest MRI (2.1, 2.0) and JRuby versions (1.7).  Other versions/VMs
-are untested but might work fine.
+are untested but might work fine.  MRI 1.9 is no longer supported.
 
 The last two major Rails releases (3.2 and 4.0) are officially supported, other
 versions might work fine.
@@ -76,6 +76,13 @@ Problems?
 
 If you have a problem, please review the [FAQ](https://github.com/mperham/sidekiq/wiki/FAQ) and [Troubleshooting](https://github.com/mperham/sidekiq/wiki/Problems-and-Troubleshooting) wiki pages. Searching the issues for your problem is also a good idea.  If that doesn't help, feel free to email the Sidekiq mailing list or open a new issue.
 The mailing list is the preferred place to ask questions on usage. If you are encountering what you think is a bug, please open an issue.
+
+
+Thanks
+-----------------
+
+Sidekiq stays fast by using the [JProfiler java profiler](http://www.ej-technologies.com/products/jprofiler/overview.html) to find and fix
+performance problems on JRuby.  Unfortunately MRI does not have good profile tooling.
 
 
 License

@@ -7,7 +7,7 @@ module Sidekiq
     class Pretty < Logger::Formatter
       # Provide a call() method that returns the formatted message.
       def call(severity, time, program_name, message)
-        "#{time.utc.iso8601} #{Process.pid} TID-#{Thread.current.object_id.to_s(36)}#{context} #{severity}: #{message}\n"
+        "#{time.utc.iso8601} #{::Process.pid} TID-#{Thread.current.object_id.to_s(36)}#{context} #{severity}: #{message}\n"
       end
 
       def context
@@ -85,6 +85,9 @@ module Sidekiq
         end
       end
       nr
+    rescue RuntimeError => ex
+      # RuntimeError: ObjectSpace is disabled; each_object will only work with Class, pass -X+O to enable
+      puts "Unable to reopen logs: #{ex.message}"
     end
 
     def logger

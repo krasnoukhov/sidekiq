@@ -42,6 +42,20 @@ module Sidekiq
       erb :busy
     end
 
+    post "/busy" do
+      if params['hostname']
+        pro = Sidekiq::Process.new('hostname' => params["hostname"], 'pid' => params['pid'])
+        pro.quiet! if params[:quiet]
+        pro.stop! if params[:stop]
+      else
+        Sidekiq::ProcessSet.new.each do |pro|
+          pro.quiet! if params[:quiet]
+          pro.stop! if params[:stop]
+        end
+      end
+      redirect "#{root_path}busy"
+    end
+
     get "/queues" do
       @queues = Sidekiq::Queue.all
       erb :queues
@@ -51,8 +65,9 @@ module Sidekiq
       halt 404 unless params[:name]
       @count = (params[:count] || 25).to_i
       @name = params[:name]
+      @queue = Sidekiq::Queue.new(@name)
       (@current_page, @total_size, @messages) = page("queue:#{@name}", params[:page], @count)
-      @messages = @messages.map {|msg| Sidekiq.load_json(msg) }
+      @messages = @messages.map {|msg| Sidekiq::Job.new(msg, @name) }
       erb :queue
     end
 
@@ -85,12 +100,7 @@ module Sidekiq
 
       params['key'].each do |key|
         job = Sidekiq::DeadSet.new.fetch(*parse_params(key)).first
-        next unless job
-        if params['retry']
-          job.retry
-        elsif params['delete']
-          job.delete
-        end
+        retry_or_delete job, params if job
       end
       redirect_with_query("#{root_path}morgue")
     end
@@ -108,13 +118,7 @@ module Sidekiq
     post "/morgue/:key" do
       halt 404 unless params['key']
       job = Sidekiq::DeadSet.new.fetch(*parse_params(params['key'])).first
-      if job
-        if params['retry']
-          job.retry
-        elsif params['delete']
-          job.delete
-        end
-      end
+      retry_or_delete job, params if job
       redirect_with_query("#{root_path}morgue")
     end
 
@@ -138,12 +142,7 @@ module Sidekiq
 
       params['key'].each do |key|
         job = Sidekiq::RetrySet.new.fetch(*parse_params(key)).first
-        next unless job
-        if params['retry']
-          job.retry
-        elsif params['delete']
-          job.delete
-        end
+        retry_or_delete job, params if job
       end
       redirect_with_query("#{root_path}retries")
     end
@@ -161,13 +160,7 @@ module Sidekiq
     post "/retries/:key" do
       halt 404 unless params['key']
       job = Sidekiq::RetrySet.new.fetch(*parse_params(params['key'])).first
-      if job
-        if params['retry']
-          job.retry
-        elsif params['delete']
-          job.delete
-        end
-      end
+      retry_or_delete job, params if job
       redirect_with_query("#{root_path}retries")
     end
 
@@ -190,13 +183,7 @@ module Sidekiq
 
       params['key'].each do |key|
         job = Sidekiq::ScheduledSet.new.fetch(*parse_params(key)).first
-        if job
-          if params['delete']
-            job.delete
-          elsif params['add_to_queue']
-            job.add_to_queue
-          end
-        end
+        delete_or_add_queue job, params if job
       end
       redirect_with_query("#{root_path}scheduled")
     end
@@ -204,13 +191,7 @@ module Sidekiq
     post "/scheduled/:key" do
       halt 404 unless params['key']
       job = Sidekiq::ScheduledSet.new.fetch(*parse_params(params['key'])).first
-      if job
-        if params['add_to_queue']
-          job.add_to_queue
-        elsif params['delete']
-          job.delete
-        end
-      end
+      delete_or_add_queue job, params if job
       redirect_with_query("#{root_path}scheduled")
     end
 
@@ -222,7 +203,7 @@ module Sidekiq
       erb :dashboard
     end
 
-    REDIS_KEYS = %w(redis_stats uptime_in_days connected_clients used_memory_human used_memory_peak_human)
+    REDIS_KEYS = %w(redis_version uptime_in_days connected_clients used_memory_human used_memory_peak_human)
 
     get '/dashboard/stats' do
       sidekiq_stats = Sidekiq::Stats.new
@@ -244,5 +225,22 @@ module Sidekiq
       })
     end
 
+    private
+
+    def retry_or_delete job, params
+      if params['retry']
+        job.retry
+      elsif params['delete']
+        job.delete
+      end
+    end
+
+    def delete_or_add_queue job, params
+      if params['delete']
+        job.delete
+      elsif params['add_to_queue']
+        job.add_to_queue
+      end
+    end
   end
 end

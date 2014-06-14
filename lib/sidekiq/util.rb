@@ -27,11 +27,22 @@ module Sidekiq
     end
 
     def hostname
-      Socket.gethostname
+      ENV['DYNO'] || Socket.gethostname
     end
 
     def identity
       @@identity ||= "#{hostname}:#{$$}"
     end
+
+    def fire_event(event)
+      Sidekiq.options[:lifecycle_events][event].each do |block|
+        begin
+          block.call
+        rescue => ex
+          handle_exception(ex, { :event => event })
+        end
+      end
+    end
+
   end
 end

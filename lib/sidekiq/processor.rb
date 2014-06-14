@@ -1,7 +1,6 @@
 require 'sidekiq/util'
 require 'sidekiq/actor'
 
-require 'sidekiq/middleware/server/active_record'
 require 'sidekiq/middleware/server/retry_jobs'
 require 'sidekiq/middleware/server/logging'
 
@@ -22,7 +21,10 @@ module Sidekiq
       Middleware::Chain.new do |m|
         m.add Middleware::Server::Logging
         m.add Middleware::Server::RetryJobs
-        m.add Middleware::Server::ActiveRecord
+        if defined?(::ActiveRecord::Base)
+          require 'sidekiq/middleware/server/active_record'
+          m.add Sidekiq::Middleware::Server::ActiveRecord
+        end
       end
     end
 
@@ -83,7 +85,7 @@ module Sidekiq
         Sidekiq.redis do |conn|
           conn.multi do
             conn.hmset("#{identity}:workers", thread_identity, hash)
-            conn.expire("#{identity}:workers", 60*60)
+            conn.expire("#{identity}:workers", 60*60*4)
           end
         end
       end
@@ -116,9 +118,6 @@ module Sidekiq
         end
       end
     end
-
-    # Singleton classes are not clonable.
-    SINGLETON_CLASSES = [ NilClass, TrueClass, FalseClass, Symbol, Fixnum, Float, Bignum ].freeze
 
     # Deep clone the arguments passed to the worker so that if
     # the message fails, what is pushed back onto Redis hasn't

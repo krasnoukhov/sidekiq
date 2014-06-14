@@ -4,6 +4,7 @@ require 'yaml'
 require 'singleton'
 require 'optparse'
 require 'erb'
+require 'fileutils'
 
 require 'sidekiq'
 require 'sidekiq/util'
@@ -19,7 +20,7 @@ module Sidekiq
 
   class CLI
     include Util
-    include Singleton
+    include Singleton unless $TESTING
 
     # Used for CLI testing
     attr_accessor :code
@@ -39,16 +40,14 @@ module Sidekiq
       daemonize
       write_pid
       load_celluloid
-      boot_system
     end
 
+    # Code within this method is not tested because it alters
+    # global process state irreversibly.  PRs which improve the
+    # test coverage of Sidekiq::CLI are welcomed.
     def run
-      # Print logo and banner for development
-      if environment == 'development' && $stdout.tty?
-        puts "\e[#{31}m"
-        puts Sidekiq::BANNER
-        puts "\e[0m"
-      end
+      boot_system
+      print_banner
 
       self_read, self_write = IO.pipe
 
@@ -64,6 +63,7 @@ module Sidekiq
 
       logger.info "Running in #{RUBY_DESCRIPTION}"
       logger.info Sidekiq::LICENSE
+      logger.info "Upgrade to Sidekiq Pro for more features and support: http://sidekiq.org/pro" unless defined?(::Sidekiq::Pro)
 
       fire_event(:startup)
 
@@ -91,15 +91,29 @@ module Sidekiq
       end
     end
 
+    def self.banner
+%q{         s
+          ss
+     sss  sss         ss
+     s  sss s   ssss sss   ____  _     _      _    _
+     s     sssss ssss     / ___|(_) __| | ___| | _(_) __ _
+    s         sss         \___ \| |/ _` |/ _ \ |/ / |/ _` |
+    s sssss  s             ___) | | (_| |  __/   <| | (_| |
+    ss    s  s            |____/|_|\__,_|\___|_|\_\_|\__, |
+    s     s s                                           |_|
+          s s
+         sss
+         sss }
+    end
+
     private
 
-    def fire_event(event)
-      Sidekiq.options[:lifecycle_events][event].each do |block|
-        begin
-          block.call
-        rescue => ex
-          handle_exception(ex, { :event => event })
-        end
+    def print_banner
+      # Print logo and banner for development
+      if environment == 'development' && $stdout.tty?
+        puts "\e[#{31}m"
+        puts Sidekiq::CLI.banner
+        puts "\e[0m"
       end
     end
 
@@ -156,7 +170,7 @@ module Sidekiq
         files_to_reopen << file unless file.closed?
       end
 
-      Process.daemon(true, true)
+      ::Process.daemon(true, true)
 
       files_to_reopen.each do |file|
         begin
@@ -324,11 +338,9 @@ module Sidekiq
 
     def write_pid
       if path = options[:pidfile]
-        File.open(path, 'w') do |f|
-          f.puts Process.pid
-        end
-        at_exit do
-          FileUtils.rm_f path
+        pidfile = File.expand_path(path)
+        File.open(pidfile, 'w') do |f|
+          f.puts ::Process.pid
         end
       end
     end

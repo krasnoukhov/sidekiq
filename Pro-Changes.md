@@ -3,7 +3,43 @@ Sidekiq Pro Changelog
 
 Please see [http://sidekiq.org/pro](http://sidekiq.org/pro) for more details and how to buy.
 
-HEAD
+1.7.3
+-----------
+
+- Batch callbacks should use the same queue as the associated jobs.
+
+1.7.2
+-----------
+
+- **DEPRECATION** Use `Batch#on(:complete)` instead of `Batch#notify`.
+  The specific Campfire, HipChat, email and other notification schemes
+  will be removed in 2.0.0.
+- Remove batch from UI when successful. [#1745]
+- Convert batch callbacks to be asynchronous jobs for error handling [#1744]
+
+1.7.1
+-----------
+
+- Fix for paused queues being processed for a few seconds when starting
+  a new Sidekiq process.
+- Add a 5 sec delay when starting reliable fetch on Heroku to minimize
+  any duplicate job processing with another process shutting down.
+
+1.7.0
+-----------
+
+- Add ability to pause reliable queues via API.
+```ruby
+q = Sidekiq::Queue.new("critical")
+q.pause!
+q.paused? # => true
+q.unpause!
+```
+
+Sidekiq polls Redis every 10 seconds for paused queues so pausing will take
+a few seconds to take effect.
+
+1.6.0
 -----------
 
 - Compatible with Sidekiq 3.
@@ -17,7 +53,6 @@ HEAD
 1.5.0
 -----------
 
-- Compatible with upcoming Sidekiq 3.0 release
 - Fix issue on Heroku where reliable fetch could orphan jobs [#1573]
 
 

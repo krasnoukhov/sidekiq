@@ -1,7 +1,79 @@
-3.0.0
+3.1.4
 -----------
 
-**Not yet released**
+- Happy π release!
+- Self-tuning Scheduler polling, we use heartbeat info to better tune poll\_interval [#1630]
+- Remove all table column width rules, hopefully get better column formatting [#1747]
+- Handle edge case where YAML can't be decoded in dev mode [#1761]
+- Fix lingering jobs in Busy page on Heroku [#1764]
+
+3.1.3
+-----------
+
+- Use ENV['DYNO'] on Heroku for hostname display, rather than an ugly UUID. [#1742]
+- Show per-process labels on the Busy page, for feature tagging [#1673]
+
+
+3.1.2
+-----------
+
+- Suitably chastised, @mperham reverts the Bundler change.
+
+
+3.1.1
+-----------
+
+- Sidekiq::CLI now runs `Bundler.require(:default, environment)` to boot all gems
+  before loading any app code.
+- Sort queues by name in Web UI [#1734]
+
+
+3.1.0
+-----------
+
+- New **remote control** feature: you can remotely trigger Sidekiq to quiet
+  or terminate via API, without signals.  This is most useful on JRuby
+  or Heroku which does not support the USR1 'quiet' signal.  Now you can
+  run a rake task like this at the start of your deploy to quiet your
+  set of Sidekiq processes. [#1703]
+```ruby
+namespace :sidekiq do
+  task :quiet => :environment do
+    Sidekiq::ProcessSet.new.each(&:quiet!)
+  end
+end
+```
+- The Web UI can use the API to quiet or stop all processes via the Busy page.
+- The Web UI understands and hides the `Sidekiq::Extensions::Delay*`
+  classes, instead showing `Class.method` as the Job. [#1718]
+- Polish the Dashboard graphs a bit, update Rickshaw [brandonhilkert, #1725]
+- The poll interval is now configurable in the Web UI [madebydna, #1713]
+- Delay extensions can be removed so they don't conflict with
+  DelayedJob: put `Sidekiq.remove_delay!` in your initializer. [devaroop, #1674]
+
+
+3.0.2
+-----------
+
+- Revert gemfile requirement of Ruby 2.0.  JRuby 1.7 calls itself Ruby
+  1.9.3 and broke with this requirement.
+
+3.0.1
+-----------
+
+- Revert pidfile behavior from 2.17.5: Sidekiq will no longer remove its own pidfile
+  as this is a race condition when restarting. [#1470, #1677]
+- Show warning on the Queues page if a queue is paused [#1672]
+- Only activate the ActiveRecord middleware if ActiveRecord::Base is defined on boot. [#1666]
+- Add ability to disable jobs going to the DJQ with the `dead` option.
+```ruby
+sidekiq_options :dead => false, :retry => 5
+```
+- Minor fixes
+
+
+3.0.0
+-----------
 
 Please see [3.0-Upgrade.md](3.0-Upgrade.md) for more comprehensive upgrade notes.
 

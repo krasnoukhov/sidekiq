@@ -69,6 +69,7 @@ module Sidekiq
         'tag' => @options[:tag] || '',
         'concurrency' => @options[:concurrency],
         'queues' => @options[:queues].uniq,
+        'labels' => Sidekiq.options[:labels],
       }
       Sidekiq.redis do |conn|
         conn.multi do
@@ -82,7 +83,10 @@ module Sidekiq
 
     def stop_heartbeat
       Sidekiq.redis do |conn|
-        conn.srem('processes', identity)
+        conn.pipelined do
+          conn.srem('processes', identity)
+          conn.del("#{identity}:workers")
+        end
       end
     end
   end

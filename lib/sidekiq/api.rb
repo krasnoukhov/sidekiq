@@ -118,7 +118,7 @@ module Sidekiq
     include Enumerable
 
     def self.all
-      Sidekiq.redis {|c| c.smembers('queues') }.map {|q| Sidekiq::Queue.new(q) }
+      Sidekiq.redis {|c| c.smembers('queues') }.sort.map {|q| Sidekiq::Queue.new(q) }
     end
 
     attr_reader :name
@@ -130,6 +130,11 @@ module Sidekiq
 
     def size
       Sidekiq.redis { |con| con.llen(@rname) }
+    end
+
+    # Sidekiq Pro overrides this
+    def paused?
+      false
     end
 
     def latency
@@ -184,16 +189,45 @@ module Sidekiq
   # removed from the queue via Job#delete.
   #
   class Job
+    KNOWN_WRAPPERS = [/\ASidekiq::Extensions::Delayed/, "ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper"]
     attr_reader :item
 
     def initialize(item, queue_name=nil)
       @value = item
-      @item = Sidekiq.load_json(item)
+      @item = item.is_a?(Hash) ? item : Sidekiq.load_json(item)
       @queue = queue_name || @item['queue']
     end
 
     def klass
       @item['class']
+    end
+
+    def display_class
+      # Unwrap known wrappers so they show up in a human-friendly manner in the Web UI
+      @klass ||= case klass
+                 when /\ASidekiq::Extensions::Delayed/
+                   safe_load(args[0], klass) do |target, method, _|
+                     "#{target}.#{method}"
+                   end
+                 when "ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper"
+                   args[0]
+                 else
+                   klass
+                 end
+    end
+
+    def display_args
+      # Unwrap known wrappers so they show up in a human-friendly manner in the Web UI
+      @args ||= case klass
+                when /\ASidekiq::Extensions::Delayed/
+                  safe_load(args[0], args) do |_, _, arg|
+                    arg
+                  end
+                when "ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper"
+                  args[1..-1]
+                else
+                  args
+                end
     end
 
     def args
@@ -228,6 +262,19 @@ module Sidekiq
     def [](name)
       @item.__send__(:[], name)
     end
+
+    private
+
+    def safe_load(content, default)
+      begin
+        yield *YAML.load(content)
+      rescue ::ArgumentError => ex
+        # #1761 in dev mode, it's possible to have jobs enqueued which haven't been loaded into
+        # memory yet so the YAML can't be loaded.
+        Sidekiq.logger.warn "Unable to load YAML: #{ex.message}" unless Sidekiq.options[:environment] == 'development'
+        default
+      end
+    end
   end
 
   class SortedEntry < Job
@@ -254,32 +301,56 @@ module Sidekiq
     end
 
     def add_to_queue
-      Sidekiq.redis do |conn|
-        results = conn.multi do
-          conn.zrangebyscore('schedule', score, score)
-          conn.zremrangebyscore('schedule', score, score)
-        end.first
-        results.map do |message|
-          msg = Sidekiq.load_json(message)
-          Sidekiq::Client.push(msg)
-        end
+      remove_job do |message|
+        msg = Sidekiq.load_json(message)
+        Sidekiq::Client.push(msg)
       end
     end
 
     def retry
       raise "Retry not available on jobs which have not failed" unless item["failed_at"]
+      remove_job do |message|
+        msg = Sidekiq.load_json(message)
+        msg['retry_count'] = msg['retry_count'] - 1
+        Sidekiq::Client.push(msg)
+      end
+    end
+
+    private
+
+    def remove_job
       Sidekiq.redis do |conn|
         results = conn.multi do
           conn.zrangebyscore(parent.name, score, score)
           conn.zremrangebyscore(parent.name, score, score)
         end.first
-        results.map do |message|
-          msg = Sidekiq.load_json(message)
-          msg['retry_count'] = msg['retry_count'] - 1
-          Sidekiq::Client.push(msg)
+
+        if results.size == 1
+          yield results.first
+        else
+          # multiple jobs with the same score
+          # find the one with the right JID and push it
+          hash = results.group_by do |message|
+            if message.index(jid)
+              msg = Sidekiq.load_json(message)
+              msg['jid'] == jid
+            else
+              false
+            end
+          end
+          message = hash[true].first
+          yield message
+
+          # push the rest back onto the sorted set
+          conn.multi do
+            hash[false].each do |message|
+              conn.zadd(parent.name, score.to_f.to_s, message)
+            end
+          end
         end
       end
     end
+
   end
 
   class SortedSet
@@ -444,18 +515,8 @@ module Sidekiq
   # right now.  Each process send a heartbeat to Redis every 5 seconds
   # so this set should be relatively accurate, barring network partitions.
   #
-  # Yields a hash of data which looks something like this:
+  # Yields a Sidekiq::Process.
   #
-  # {
-  #   'hostname' => 'app-1.example.com',
-  #   'started_at' => <process start time>,
-  #   'pid' => 12345,
-  #   'tag' => 'myapp'
-  #   'concurrency' => 25,
-  #   'queues' => ['default', 'low'],
-  #   'busy' => 10,
-  #   'beat' => <last heartbeat>,
-  # }
 
   class ProcessSet
     include Enumerable
@@ -481,7 +542,7 @@ module Sidekiq
           # in to Redis and probably died.
           (to_prune << sorted[i]; next) if info.nil?
           hash = Sidekiq.load_json(info)
-          yield hash.merge('busy' => busy.to_i, 'beat' => at_s.to_f)
+          yield Process.new(hash.merge('busy' => busy.to_i, 'beat' => at_s.to_f))
         end
       end
 
@@ -495,6 +556,53 @@ module Sidekiq
     # 60 seconds.
     def size
       Sidekiq.redis { |conn| conn.scard('processes') }
+    end
+  end
+
+  #
+  # Sidekiq::Process has a set of attributes which look like this:
+  #
+  # {
+  #   'hostname' => 'app-1.example.com',
+  #   'started_at' => <process start time>,
+  #   'pid' => 12345,
+  #   'tag' => 'myapp'
+  #   'concurrency' => 25,
+  #   'queues' => ['default', 'low'],
+  #   'busy' => 10,
+  #   'beat' => <last heartbeat>,
+  # }
+  class Process
+    def initialize(hash)
+      @attribs = hash
+    end
+
+    def [](key)
+      @attribs[key]
+    end
+
+    def quiet!
+      signal('USR1')
+    end
+
+    def stop!
+      signal('TERM')
+    end
+
+    private
+
+    def signal(sig)
+      key = "#{identity}-signals"
+      Sidekiq.redis do |c|
+        c.multi do
+          c.lpush(key, sig)
+          c.expire(key, 60)
+        end
+      end
+    end
+
+    def identity
+      @id ||= "#{self['hostname']}:#{self['pid']}"
     end
   end
 

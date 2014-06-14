@@ -5,7 +5,7 @@ require 'sidekiq/actor'
 module Sidekiq
   module Scheduled
 
-    POLL_INTERVAL = 15
+    INITIAL_WAIT = 10
 
     ##
     # The Poller checks Redis every N seconds for messages in the retry or scheduled
@@ -22,7 +22,7 @@ module Sidekiq
 
       def poll(first_time=false)
         watchdog('scheduling poller thread died!') do
-          add_jitter if first_time
+          initial_wait if first_time
 
           begin
             # A message's "score" in Redis is the time at which it should be processed.
@@ -60,19 +60,39 @@ module Sidekiq
             logger.error ex.backtrace.first
           end
 
-          after(poll_interval) { poll }
+          after(poll_interval * rand) { poll }
         end
       end
 
       private
 
+      # We do our best to tune poll_interval to the size of the active Sidekiq
+      # cluster.  If you have 30 processes and poll every 15 seconds, that means one
+      # Sidekiq is checking Redis every 0.5 seconds - way too often for most people
+      # and really bad if the retry or scheduled sets are large.
+      #
+      # Instead try to avoid polling more than once every 15 seconds.  If you have
+      # 30 Sidekiq processes, we'll set poll_interval to 30 * 15 * 2 or 900 seconds.
+      # To keep things statistically random, we'll sleep a random amount between
+      # 0 and 900 seconds for each poll or 450 seconds on average.  Otherwise restarting
+      # all your Sidekiq processes at the same time will lead to them all polling at
+      # the same time: the thundering herd problem.
+      #
+      # We only do this if poll_interval is unset (the default).
       def poll_interval
-        Sidekiq.options[:poll_interval] || POLL_INTERVAL
+        Sidekiq.options[:poll_interval] ||= begin
+          pcount = Sidekiq.redis {|c| c.scard('processes') } || 1
+          pcount * 15 * 2
+        end
       end
 
-      def add_jitter
+      def initial_wait
         begin
-          sleep(poll_interval * rand)
+          # Have all processes sleep between 10-15 seconds.  10 seconds
+          # to give time for the heartbeat to register and 5 random seconds
+          # to ensure they don't all hit Redis at the same time.
+          sleep(INITIAL_WAIT)
+          sleep(5 * rand)
         rescue Celluloid::Task::TerminatedError
           # Hit Ctrl-C when Sidekiq is finished booting and we have a chance
           # to get here.

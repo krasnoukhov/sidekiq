@@ -4,6 +4,7 @@ class TestApi < Sidekiq::Test
 
   describe "stats" do
     before do
+      Sidekiq.redis = REDIS
       Sidekiq.redis {|c| c.flushdb }
     end
 
@@ -164,6 +165,7 @@ class TestApi < Sidekiq::Test
     include Sidekiq::Util
 
     before do
+      Sidekiq.redis = REDIS
       Sidekiq.redis {|c| c.flushdb }
     end
 
@@ -187,7 +189,6 @@ class TestApi < Sidekiq::Test
         assert_equal 24, job.jid.size
         assert_equal [1, 'mike'], job.args
         assert_equal Time.new(2012, 12, 26), job.enqueued_at
-
       end
 
       assert q.latency > 10_000_000
@@ -196,15 +197,29 @@ class TestApi < Sidekiq::Test
       assert_equal 0, q.size
     end
 
+    it 'unwraps delayed jobs' do
+      ApiWorker.delay.foo(1,2,3)
+      q = Sidekiq::Queue.new
+      x = q.first
+      assert_equal "TestApi::ApiWorker.foo", x.display_class
+      assert_equal [1,2,3], x.display_args
+    end
+
     it 'can delete jobs' do
       q = Sidekiq::Queue.new
       ApiWorker.perform_async(1, 'mike')
       assert_equal 1, q.size
+
+      x = q.first
+      assert_equal "TestApi::ApiWorker", x.display_class
+      assert_equal [1,'mike'], x.display_args
+
       assert_equal [true], q.map(&:delete)
       assert_equal 0, q.size
     end
 
     it "can move scheduled job to queue" do
+      remain_id = ApiWorker.perform_in(100, 1, 'jason')
       job_id = ApiWorker.perform_in(100, 1, 'jason')
       job = Sidekiq::ScheduledSet.new.find_job(job_id)
       q = Sidekiq::Queue.new
@@ -212,8 +227,24 @@ class TestApi < Sidekiq::Test
       queued_job = q.find_job(job_id)
       refute_nil queued_job
       assert_equal queued_job.jid, job_id
+      assert_nil Sidekiq::ScheduledSet.new.find_job(job_id)
+      refute_nil Sidekiq::ScheduledSet.new.find_job(remain_id)
+    end
+
+    it "handles multiple scheduled jobs when moving to queue" do
+      jids = Sidekiq::Client.push_bulk('class' => ApiWorker,
+                                       'args' => [[1, 'jason'], [2, 'jason']],
+                                       'at' => Time.now.to_f)
+      assert_equal 2, jids.size
+      (remain_id, job_id) = jids
       job = Sidekiq::ScheduledSet.new.find_job(job_id)
-      assert_nil job
+      q = Sidekiq::Queue.new
+      job.add_to_queue
+      queued_job = q.find_job(job_id)
+      refute_nil queued_job
+      assert_equal queued_job.jid, job_id
+      assert_nil Sidekiq::ScheduledSet.new.find_job(job_id)
+      refute_nil Sidekiq::ScheduledSet.new.find_job(remain_id)
     end
 
     it 'can find job by id in sorted sets' do
@@ -259,7 +290,7 @@ class TestApi < Sidekiq::Test
 
       Sidekiq.redis do |conn|
         refute conn.smembers('queues').include?('foo')
-        refute conn.exists('queues:foo')
+        refute conn.exists('queue:foo')
       end
     end
 
@@ -298,7 +329,7 @@ class TestApi < Sidekiq::Test
       assert_equal 'ApiWorker', retri.klass
       assert_equal 'default', retri.queue
       assert_equal 'bob', retri.jid
-      assert_in_delta Time.now.to_f, retri.at.to_f, 0.01
+      assert_in_delta Time.now.to_f, retri.at.to_f, 0.02
     end
 
     it 'can delete multiple retries from score' do
@@ -356,7 +387,13 @@ class TestApi < Sidekiq::Test
       ps = Sidekiq::ProcessSet.new.to_a
       assert_equal 1, ps.size
       data = ps.first
-      assert_equal odata.merge('busy' => 10, 'beat' => time), data
+      assert_equal 10, data['busy']
+      assert_equal time, data['beat']
+      assert_equal 123, data['pid']
+      data.quiet!
+      data.stop!
+      assert_equal "TERM", Sidekiq.redis{|c| c.lpop("#{hostname}:123-signals") }
+      assert_equal "USR1", Sidekiq.redis{|c| c.lpop("#{hostname}:123-signals") }
     end
 
     it 'can enumerate workers' do

@@ -118,10 +118,10 @@ module Sidekiq
               worker.sidekiq_retries_exhausted_block.call(msg)
             end
           rescue => e
-            handle_exception(e, { :context => "Error calling retries_exhausted" })
+            handle_exception(e, { :context => "Error calling retries_exhausted for #{worker.class}", :job => msg })
           end
 
-          send_to_morgue(msg)
+          send_to_morgue(msg) unless msg['dead'] == false
         end
 
         def send_to_morgue(msg)

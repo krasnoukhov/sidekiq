@@ -5,6 +5,7 @@ class TestManager < Sidekiq::Test
 
   describe 'manager' do
     before do
+      Sidekiq.redis = REDIS
       Sidekiq.redis {|c| c.flushdb }
     end
 
@@ -94,6 +95,11 @@ class TestManager < Sidekiq::Test
         @mgr.assign(uow)
 
         @processor.verify
+        @proctitle = $0
+      end
+
+      after do
+        $0 = @proctitle
       end
 
       describe 'when manager is active' do
@@ -102,16 +108,14 @@ class TestManager < Sidekiq::Test
         end
 
         it 'sets useful info to proctitle' do
-          proctitle = $0
           assert_equal "sidekiq #{Sidekiq::VERSION} myapp [1 of 3 busy]", $0
-          $0 = proctitle
         end
 
         it 'stores process info in redis' do
           info = Sidekiq.redis { |c| c.hmget('identity', 'busy') }
           assert_equal ["1"], info
           expires = Sidekiq.redis { |c| c.pttl('identity') }
-          assert_in_delta 60000, expires, 1
+          assert_in_delta 60000, expires, 10
         end
       end
 
@@ -127,17 +131,15 @@ class TestManager < Sidekiq::Test
           @processor.verify
         end
 
-        it 'indicates status in proctitle' do
-          proctitle = $0
+        it 'indicates stopping status in proctitle' do
           assert_equal "sidekiq #{Sidekiq::VERSION} myapp [0 of 3 busy] stopping", $0
-          $0 = proctitle
         end
 
         it 'stores process info in redis' do
           info = Sidekiq.redis { |c| c.hmget('identity', 'busy') }
           assert_equal ["0"], info
           expires = Sidekiq.redis { |c| c.pttl('identity') }
-          assert_in_delta 60000, expires, 1
+          assert_in_delta 60000, expires, 5
         end
       end
     end
