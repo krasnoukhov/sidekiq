@@ -1,3 +1,19 @@
+3.2.1
+-----------
+
+- Revert eager loading change for Rails 3.x apps, as it broke a few edge
+  cases.
+
+3.2.0
+-----------
+
+- **Fix issue which caused duplicate job execution in Rails 3.x**
+  This issue is caused by [improper exception handling in ActiveRecord](https://github.com/rails/rails/blob/3-2-stable/activerecord/lib/active_record/connection_adapters/abstract_adapter.rb#L281) which changes Sidekiq's Shutdown exception into a database
+  error, making Sidekiq think the job needs to be retried. **The fix requires Ruby 2.1**. [#1805]
+- Update how Sidekiq eager loads Rails application code [#1791, jonleighton]
+- Change logging timestamp to show milliseconds.
+- Reverse sorting of Dead tab so newer jobs are listed first [#1802]
+
 3.1.4
 -----------
 
