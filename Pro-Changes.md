@@ -1,7 +1,133 @@
 Sidekiq Pro Changelog
 =======================
 
-Please see [http://sidekiq.org/pro](http://sidekiq.org/pro) for more details and how to buy.
+Please see [http://sidekiq.org/](http://sidekiq.org/) for more details and how to buy.
+
+2.1.1
+-----------
+
+- Make ShardSet lazier so Redis can first be initialized at startup. [#2603]
+
+
+2.1.0
+-----------
+
+- Explicit support for sharding batches.  You list your Redis shards and
+  Sidekiq Pro will randomly spread batches across the shards.  The BID
+  will indicate which shard contains the batch data.  Jobs within a
+  batch may be spread across all shards too. [#2548, jonhyman]
+- Officially deprecate Sidekiq::Notifications code.  Notifications have
+  been undocumented for months now. [#2575]
+
+
+2.0.8
+-----------
+
+- Fix reliable scheduler mangling large numeric arguments.  Lua's CJSON
+  library cannot accurately encode numbers larger than 14 digits! [#2478]
+
+2.0.7
+-----------
+
+- Optimize delete of enormous batches (100,000s of jobs) [#2458]
+
+2.0.6, 1.9.3
+--------------
+
+- CSRF protection in Sidekiq 3.4.2 broke job filtering in the Web UI [#2442]
+- Sidekiq Pro 1.x is now limited to Sidekiq < 3.5.0.
+
+2.0.5
+-----------
+
+- Atomic scheduler now sets `enqueued_at` [#2414]
+- Batches now account for jobs which are stopped by client middleware [#2406]
+- Ignore redundant calls to `Sidekiq::Client.reliable_push!` [#2408]
+
+2.0.4
+-----------
+
+- Reliable push now supports sharding [#2409]
+- Reliable push now only catches Redis exceptions [#2307]
+
+2.0.3
+-----------
+
+- Display Batch callback data on the Batch details page. [#2347]
+- Fix incompatibility with Pro Web and Rack middleware. [#2344] Thank
+  you to Jason Clark for the tip on how to fix it.
+
+2.0.2
+-----------
+
+- Multiple Web UIs can now run in the same process. [#2267] If you have
+  multiple Redis shards, you can mount UIs for all in the same process:
+```ruby
+POOL1 = ConnectionPool.new { Redis.new(:url => "redis://localhost:6379/0") }
+POOL2 = ConnectionPool.new { Redis.new(:url => "redis://localhost:6378/0") }
+
+mount Sidekiq::Pro::Web => '/sidekiq' # default
+mount Sidekiq::Pro::Web.with(redis_pool: POOL1), at: '/sidekiq1', as: 'sidekiq1' # shard1
+mount Sidekiq::Pro::Web.with(redis_pool: POOL2), at: '/sidekiq2', as: 'sidekiq2' # shard2
+```
+- **SECURITY** Fix batch XSS in error data.  Thanks to moneybird.com for
+  reporting the issue.
+
+2.0.1
+-----------
+
+- Add `batch.callback_queue` so batch callbacks can use a higher
+  priority queue than jobs. [#2200]
+- Gracefully recover if someone runs `SCRIPT FLUSH` on Redis. [#2240]
+- Ignore errors when attempting `bulk_requeue`, allowing clean shutdown
+
+2.0.0
+-----------
+
+- See [the Upgrade Notes](Pro-2.0-Upgrade.md) for detailed notes.
+
+1.9.2
+-----------
+
+- As of 1/1/2015, Sidekiq Pro is hosted on a new dedicated server.
+  Happy new year and let's hope for 100% uptime!
+- Fix bug in reliable\_fetch where jobs could be duplicated if a Sidekiq
+  process crashed and you were using weighted queues. [#2120]
+
+1.9.1
+-----------
+
+- **SECURITY** Fix XSS in batch description, thanks to intercom.io for reporting the
+  issue.  If you don't use batch descriptions, you don't need the fix.
+
+1.9.0
+-----------
+
+- Add new expiring jobs feature [#1982]
+- Show batch expiration on Batch details page [#1981]
+- Add '$' batch success token to the pubsub support. [#1953]
+
+
+1.8.0
+-----------
+
+- Fix race condition where Batches can complete
+  before they have been fully defined or only half-defined. Requires
+  Sidekiq 3.2.3. [#1919]
+
+
+1.7.6
+-----------
+
+- Quick release to verify #1919
+
+
+1.7.5
+-----------
+
+- Fix job filtering within the Dead tab.
+- Add APIs and wiki documentation for invalidating jobs within a batch.
+
 
 1.7.4
 -----------

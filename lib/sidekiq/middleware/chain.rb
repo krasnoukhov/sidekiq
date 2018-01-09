@@ -89,6 +89,11 @@ module Sidekiq
         entries << Entry.new(klass, *args)
       end
 
+      def prepend(klass, *args)
+        remove(klass) if exists?(klass)
+        entries.insert(0, Entry.new(klass, *args))
+      end
+
       def insert_before(oldklass, newklass, *args)
         i = entries.index { |entry| entry.klass == newklass }
         new_entry = i.nil? ? Entry.new(newklass, *args) : entries.delete_at(i)
@@ -115,11 +120,11 @@ module Sidekiq
         entries.clear
       end
 
-      def invoke(*args, &final_action)
+      def invoke(*args)
         chain = retrieve.dup
         traverse_chain = lambda do
           if chain.empty?
-            final_action.call
+            yield
           else
             chain.shift.call(*args, &traverse_chain)
           end

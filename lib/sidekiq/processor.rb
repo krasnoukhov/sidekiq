@@ -40,18 +40,23 @@ module Sidekiq
 
       @boss.async.real_thread(proxy_id, Thread.current)
 
-      ack = true
+      ack = false
       begin
         msg = Sidekiq.load_json(msgstr)
-        klass  = msg['class'].constantize
+        klass  = msg['class'.freeze].constantize
         worker = klass.new
-        worker.jid = msg['jid']
+        worker.jid = msg['jid'.freeze]
 
         stats(worker, msg, queue) do
           Sidekiq.server_middleware.invoke(worker, msg, queue) do
-            worker.perform(*cloned(msg['args']))
+            # Only ack if we either attempted to start this job or
+            # successfully completed it. This prevents us from
+            # losing jobs if a middleware raises an exception before yielding
+            ack = true
+            execute_job(worker, cloned(msg['args'.freeze]))
           end
         end
+        ack = true
       rescue Sidekiq::Shutdown
         # Had to force kill this job because it didn't finish
         # within the timeout.  Don't acknowledge the work since
@@ -69,6 +74,10 @@ module Sidekiq
 
     def inspect
       "<Processor##{object_id.to_s(16)}>"
+    end
+
+    def execute_job(worker, cloned_args)
+      worker.perform(*cloned_args)
     end
 
     private
@@ -90,30 +99,31 @@ module Sidekiq
         end
       end
 
+      nowdate = Time.now.utc.strftime("%Y-%m-%d".freeze)
       begin
         yield
       rescue Exception
         retry_and_suppress_exceptions do
+          failed = "stat:failed:#{nowdate}"
           Sidekiq.redis do |conn|
-            failed = "stat:failed:#{Time.now.utc.to_date}"
-            result = conn.multi do
-              conn.incrby("stat:failed", 1)
+            conn.multi do
+              conn.incrby("stat:failed".freeze, 1)
               conn.incrby(failed, 1)
+              conn.expire(failed, STATS_TIMEOUT)
             end
-            conn.expire(failed, STATS_TIMEOUT) if result.last == 1
           end
         end
         raise
       ensure
         retry_and_suppress_exceptions do
+          processed = "stat:processed:#{nowdate}"
           Sidekiq.redis do |conn|
-            processed = "stat:processed:#{Time.now.utc.to_date}"
-            result = conn.multi do
+            conn.multi do
               conn.hdel("#{identity}:workers", thread_identity)
-              conn.incrby("stat:processed", 1)
+              conn.incrby("stat:processed".freeze, 1)
               conn.incrby(processed, 1)
+              conn.expire(processed, STATS_TIMEOUT)
             end
-            conn.expire(processed, STATS_TIMEOUT) if result.last == 1
           end
         end
       end
@@ -128,7 +138,7 @@ module Sidekiq
 
     # If an exception occurs in the block passed to this method, that block will be retried up to max_retries times.
     # All exceptions will be swallowed and logged.
-    def retry_and_suppress_exceptions(max_retries = 2)
+    def retry_and_suppress_exceptions(max_retries = 5)
       retry_count = 0
       begin
         yield
@@ -136,12 +146,16 @@ module Sidekiq
         retry_count += 1
         if retry_count <= max_retries
           Sidekiq.logger.debug {"Suppressing and retrying error: #{e.inspect}"}
-          sleep(1)
+          pause_for_recovery(retry_count)
           retry
         else
           handle_exception(e, { :message => "Exhausted #{max_retries} retries"})
         end
       end
+    end
+
+    def pause_for_recovery(retry_count)
+      sleep(retry_count)
     end
   end
 end

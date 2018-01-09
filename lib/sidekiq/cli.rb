@@ -1,3 +1,4 @@
+# encoding: utf-8
 $stdout.sync = true
 
 require 'yaml'
@@ -63,9 +64,18 @@ module Sidekiq
 
       logger.info "Running in #{RUBY_DESCRIPTION}"
       logger.info Sidekiq::LICENSE
-      logger.info "Upgrade to Sidekiq Pro for more features and support: http://sidekiq.org/pro" unless defined?(::Sidekiq::Pro)
+      logger.info "Upgrade to Sidekiq Pro for more features and support: http://sidekiq.org" unless defined?(::Sidekiq::Pro)
 
       fire_event(:startup)
+
+      logger.debug {
+        "Middleware: #{Sidekiq.server_middleware.map(&:klass).join(', ')}"
+      }
+
+      Sidekiq.redis do |conn|
+        # touch the connection pool so it is created before we
+        # launch the actors.
+      end
 
       if !options[:daemon]
         logger.info 'Starting processing, hit Ctrl-C to stop'
@@ -84,7 +94,6 @@ module Sidekiq
       rescue Interrupt
         logger.info 'Shutting down'
         launcher.stop
-        fire_event(:shutdown)
         # Explicitly exit so busy Processor threads can't block
         # process shutdown.
         exit(0)
@@ -92,29 +101,20 @@ module Sidekiq
     end
 
     def self.banner
-%q{         s
-          ss
-     sss  sss         ss
-     s  sss s   ssss sss   ____  _     _      _    _
-     s     sssss ssss     / ___|(_) __| | ___| | _(_) __ _
-    s         sss         \___ \| |/ _` |/ _ \ |/ / |/ _` |
-    s sssss  s             ___) | | (_| |  __/   <| | (_| |
-    ss    s  s            |____/|_|\__,_|\___|_|\_\_|\__, |
-    s     s s                                           |_|
-          s s
-         sss
-         sss }
-    end
-
-    private
-
-    def print_banner
-      # Print logo and banner for development
-      if environment == 'development' && $stdout.tty?
-        puts "\e[#{31}m"
-        puts Sidekiq::CLI.banner
-        puts "\e[0m"
-      end
+%q{
+         m,
+         `$b
+    .ss,  $$:         .,d$
+    `$$P,d$P'    .,md$P"'
+     ,$$$$$bmmd$$$P^'
+   .d$$$$$$$$$$P'
+   $$^' `"^$$$'       ____  _     _      _    _
+   $:     ,$$:       / ___|(_) __| | ___| | _(_) __ _
+   `b     :$$        \___ \| |/ _` |/ _ \ |/ / |/ _` |
+          $$:         ___) | | (_| |  __/   <| | (_| |
+          $$         |____/|_|\__,_|\___|_|\_\_|\__, |
+        .d$$                                       |_|
+}
     end
 
     def handle_signal(sig)
@@ -130,7 +130,7 @@ module Sidekiq
       when 'USR1'
         Sidekiq.logger.info "Received USR1, no longer accepting new work"
         launcher.manager.async.stop
-        fire_event(:quiet)
+        fire_event(:quiet, true)
       when 'USR2'
         if Sidekiq.options[:logfile]
           Sidekiq.logger.info "Received USR2, reopening log file"
@@ -138,13 +138,24 @@ module Sidekiq
         end
       when 'TTIN'
         Thread.list.each do |thread|
-          Sidekiq.logger.info "Thread TID-#{thread.object_id.to_s(36)} #{thread['label']}"
+          Sidekiq.logger.warn "Thread TID-#{thread.object_id.to_s(36)} #{thread['label']}"
           if thread.backtrace
-            Sidekiq.logger.info thread.backtrace.join("\n")
+            Sidekiq.logger.warn thread.backtrace.join("\n")
           else
-            Sidekiq.logger.info "<no backtrace available>"
+            Sidekiq.logger.warn "<no backtrace available>"
           end
         end
+      end
+    end
+
+    private
+
+    def print_banner
+      # Print logo and banner for development
+      if environment == 'development' && $stdout.tty?
+        puts "\e[#{31}m"
+        puts Sidekiq::CLI.banner
+        puts "\e[0m"
       end
     end
 
@@ -154,7 +165,7 @@ module Sidekiq
       # Celluloid can't be loaded until after we've daemonized
       # because it spins up threads and creates locks which get
       # into a very bad state if forked.
-      require 'celluloid/autostart'
+      require 'celluloid/current'
       Celluloid.logger = (options[:verbose] ? Sidekiq.logger : nil)
 
       require 'sidekiq/manager'
@@ -195,9 +206,8 @@ module Sidekiq
       @environment = cli_env || ENV['RAILS_ENV'] || ENV['RACK_ENV'] || 'development'
     end
 
-    def die(code)
-      exit(code)
-    end
+    alias_method :die, :exit
+    alias_method :☠, :exit
 
     def setup_options(args)
       opts = parse_options(args)
@@ -263,6 +273,10 @@ module Sidekiq
         logger.info "=================================================================="
         logger.info @parser
         die(1)
+      end
+
+      [:concurrency, :timeout].each do |opt|
+        raise ArgumentError, "#{opt}: #{options[opt]} is not a valid value" if options.has_key?(opt) && options[opt].to_i <= 0
       end
     end
 
@@ -336,7 +350,11 @@ module Sidekiq
         die 1
       end
       @parser.parse!(argv)
-      opts[:config_file] ||= 'config/sidekiq.yml' if File.exist?('config/sidekiq.yml')
+
+      %w[config/sidekiq.yml config/sidekiq.yml.erb].each do |filename|
+        opts[:config_file] ||= filename if File.exist?(filename)
+      end
+
       opts
     end
 
@@ -358,7 +376,7 @@ module Sidekiq
     def parse_config(cfile)
       opts = {}
       if File.exist?(cfile)
-        opts = YAML.load(ERB.new(IO.read(cfile)).result)
+        opts = YAML.load(ERB.new(IO.read(cfile)).result) || opts
         opts = opts.merge(opts.delete(environment) || {})
         parse_queues(opts, opts.delete(:queues) || [])
       else

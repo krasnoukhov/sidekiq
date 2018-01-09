@@ -21,12 +21,15 @@ module Sidekiq
     attr_accessor :fetcher
 
     SPIN_TIME_FOR_GRACEFUL_SHUTDOWN = 1
+    JVM_RESERVED_SIGNALS = ['USR1', 'USR2'] # Don't Process#kill if we get these signals via the API
 
-    def initialize(options={})
+    def initialize(condvar, options={})
       logger.debug { options.inspect }
       @options = options
       @count = options[:concurrency] || 25
+      raise ArgumentError, "Concurrency of #{@count} is not supported" if @count < 1
       @done_callback = nil
+      @finished = condvar
 
       @in_progress = {}
       @threads = {}
@@ -46,7 +49,7 @@ module Sidekiq
 
         @done = true
 
-        logger.info { "Shutting down #{@ready.size} quiet workers" }
+        logger.info { "Terminating #{@ready.size} quiet workers" }
         @ready.each { |x| x.terminate if x.alive? }
         @ready.clear
 
@@ -129,35 +132,52 @@ module Sidekiq
     # get handle to the underlying thread performing work for a processor
     # so we have it call us and tell us.
     def real_thread(proxy_id, thr)
-      @threads[proxy_id] = thr
+      @threads[proxy_id] = thr if thr.alive?
     end
 
-    def heartbeat(key, data)
-      proctitle = ['sidekiq', Sidekiq::VERSION]
-      proctitle << data['tag'] unless data['tag'].empty?
-      proctitle << "[#{@busy.size} of #{data['concurrency']} busy]"
-      proctitle << 'stopping' if stopped?
-      $0 = proctitle.join(' ')
+    PROCTITLES = [
+      proc { 'sidekiq'.freeze },
+      proc { Sidekiq::VERSION },
+      proc { |mgr, data| data['tag'] },
+      proc { |mgr, data| "[#{mgr.busy.size} of #{data['concurrency']} busy]" },
+      proc { |mgr, data| "stopping" if mgr.stopped? },
+    ]
 
-      ❤(key)
+    def heartbeat(key, data, json)
+      results = PROCTITLES.map {|x| x.(self, data) }
+      results.compact!
+      $0 = results.join(' ')
+
+      ❤(key, json)
       after(5) do
-        heartbeat(key, data)
+        heartbeat(key, data, json)
       end
+    end
+
+    def stopped?
+      @done
     end
 
     private
 
-    def ❤(key)
+    def ❤(key, json)
       begin
-        _, _, msg = Sidekiq.redis do |conn|
+        _, _, _, msg = Sidekiq.redis do |conn|
           conn.multi do
-            conn.hmset(key, 'busy', @busy.size, 'beat', Time.now.to_f)
+            conn.sadd('processes', key)
+            conn.hmset(key, 'info', json, 'busy', @busy.size, 'beat', Time.now.to_f)
             conn.expire(key, 60)
             conn.rpop("#{key}-signals")
           end
         end
 
-        ::Process.kill(msg, $$) if msg
+        return unless msg
+
+        if JVM_RESERVED_SIGNALS.include?(msg)
+          Sidekiq::CLI.instance.handle_signal(msg)
+        else
+          ::Process.kill(msg, $$)
+        end
       rescue => e
         # ignore all redis/network issues
         logger.error("heartbeat: #{e.message}")
@@ -182,7 +202,7 @@ module Sidekiq
             end
           end
 
-          signal_shutdown
+          @finished.signal
         end
       end
     end
@@ -197,17 +217,9 @@ module Sidekiq
       @fetcher.async.fetch
     end
 
-    def stopped?
-      @done
-    end
-
     def shutdown
       requeue
-      signal_shutdown
-    end
-
-    def signal_shutdown
-      after(0) { signal(:shutdown) }
+      @finished.signal
     end
 
     def requeue

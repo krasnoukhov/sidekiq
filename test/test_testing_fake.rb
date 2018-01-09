@@ -1,6 +1,5 @@
-require 'helper'
-require 'sidekiq'
-require 'sidekiq/worker'
+require_relative 'helper'
+
 require 'active_record'
 require 'action_mailer'
 require 'sidekiq/rails'
@@ -47,7 +46,7 @@ class TestTesting < Sidekiq::Test
     end
 
     before do
-      require 'sidekiq/testing.rb'
+      require 'sidekiq/testing'
       Sidekiq::Testing.fake!
       EnqueuedWorker.jobs.clear
       DirectWorker.jobs.clear
@@ -106,7 +105,6 @@ class TestTesting < Sidekiq::Test
         StoredWorker.drain
       end
       assert_equal 0, StoredWorker.jobs.size
-
     end
 
     class SpecificJidWorker
@@ -261,5 +259,10 @@ class TestTesting < Sidekiq::Test
       assert_equal 1, FirstWorker.count
       assert_equal 1, SecondWorker.count
     end
+
+    it 'can execute a job' do
+      DirectWorker.execute_job(DirectWorker.new, [2, 3])
+    end
+
   end
 end

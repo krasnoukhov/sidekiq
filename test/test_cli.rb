@@ -1,4 +1,4 @@
-require 'helper'
+require_relative 'helper'
 require 'sidekiq/cli'
 require 'tempfile'
 
@@ -31,9 +31,9 @@ class TestCli < Sidekiq::Test
     end
 
     it 'does not boot rails' do
-      refute defined?(::Rails)
+      refute defined?(::Rails::Application)
       @cli.parse(['sidekiq', '-r', './myapp'])
-      refute defined?(::Rails)
+      refute defined?(::Rails::Application)
     end
 
     it 'changes concurrency' do
@@ -128,7 +128,7 @@ class TestCli < Sidekiq::Test
 
       it 'appends messages to a logfile' do
         File.open(@tmp_log_path, 'w') do |f|
-          f.puts 'already existant log message'
+          f.puts 'already existent log message'
         end
 
         @cli.parse(['sidekiq', '-L', @tmp_log_path, '-r', './test/fake_env.rb'])
@@ -136,7 +136,7 @@ class TestCli < Sidekiq::Test
         Sidekiq.logger.info('test message')
 
         log_file_content = File.read(@tmp_log_path)
-        assert_match(/already existant/, log_file_content, "didn't include the old message")
+        assert_match(/already existent/, log_file_content, "didn't include the old message")
         assert_match(/test message/, log_file_content, "didn't include the new message")
       end
     end
@@ -168,35 +168,14 @@ class TestCli < Sidekiq::Test
         @cli.parse(['sidekiq', '-C', './test/config.yml'])
       end
 
-      it 'takes a path' do
+      it 'parses as expected' do
         assert_equal './test/config.yml', Sidekiq.options[:config_file]
-      end
-
-      it 'sets verbose' do
         refute Sidekiq.options[:verbose]
-      end
-
-      it 'sets require file' do
         assert_equal './test/fake_env.rb', Sidekiq.options[:require]
-      end
-
-      it 'does not set environment' do
         assert_equal nil, Sidekiq.options[:environment]
-      end
-
-      it 'sets concurrency' do
         assert_equal 50, Sidekiq.options[:concurrency]
-      end
-
-      it 'sets pid file' do
         assert_equal '/tmp/sidekiq-config-test.pid', Sidekiq.options[:pidfile]
-      end
-
-      it 'sets logfile' do
         assert_equal '/tmp/sidekiq.log', Sidekiq.options[:logfile]
-      end
-
-      it 'sets queues' do
         assert_equal 2, Sidekiq.options[:queues].count { |q| q == 'very_often' }
         assert_equal 1, Sidekiq.options[:queues].count { |q| q == 'seldom' }
       end
@@ -207,37 +186,45 @@ class TestCli < Sidekiq::Test
         @cli.parse(['sidekiq', '-e', 'staging', '-C', './test/env_based_config.yml'])
       end
 
-      it 'takes a path' do
+      it 'parses as expected' do
         assert_equal './test/env_based_config.yml', Sidekiq.options[:config_file]
-      end
-
-      it 'sets verbose' do
         refute Sidekiq.options[:verbose]
-      end
-
-      it 'sets require file' do
         assert_equal './test/fake_env.rb', Sidekiq.options[:require]
-      end
-
-      it 'sets environment' do
         assert_equal 'staging', Sidekiq.options[:environment]
-      end
-
-      it 'sets concurrency' do
         assert_equal 5, Sidekiq.options[:concurrency]
-      end
-
-      it 'sets pid file' do
         assert_equal '/tmp/sidekiq-config-test.pid', Sidekiq.options[:pidfile]
-      end
-
-      it 'sets logfile' do
         assert_equal '/tmp/sidekiq.log', Sidekiq.options[:logfile]
-      end
-
-      it 'sets queues' do
         assert_equal 2, Sidekiq.options[:queues].count { |q| q == 'very_often' }
         assert_equal 1, Sidekiq.options[:queues].count { |q| q == 'seldom' }
+      end
+    end
+
+    describe 'with an empty config file' do
+      before do
+        @tmp_file = Tempfile.new('sidekiq-test')
+        @tmp_path = @tmp_file.path
+        @tmp_file.close!
+      end
+
+      after do
+        File.unlink @tmp_path if File.exist? @tmp_path
+      end
+
+      it 'takes a path' do
+        @cli.parse(['sidekiq', '-C', @tmp_path])
+        assert_equal @tmp_path, Sidekiq.options[:config_file]
+      end
+
+      it 'should have an identical options hash, except for config_file' do
+        @cli.parse(['sidekiq'])
+        old_options = Sidekiq.options.clone
+
+        @cli.parse(['sidekiq', '-C', @tmp_path])
+        new_options = Sidekiq.options.clone
+        refute_equal old_options, new_options
+
+        new_options.delete(:config_file)
+        assert_equal old_options, new_options
       end
     end
 
@@ -268,23 +255,11 @@ class TestCli < Sidekiq::Test
         File.unlink @tmp_path if File.exist? @tmp_path
       end
 
-      it 'uses concurrency flag' do
+      it 'gives the expected options' do
         assert_equal 100, Sidekiq.options[:concurrency]
-      end
-
-      it 'uses require file flag' do
         assert_equal @tmp_lib_path, Sidekiq.options[:require]
-      end
-
-      it 'uses environment flag' do
         assert_equal 'snoop', Sidekiq.options[:environment]
-      end
-
-      it 'uses pidfile flag' do
         assert_equal @tmp_path, Sidekiq.options[:pidfile]
-      end
-
-      it 'sets queues' do
         assert_equal 7, Sidekiq.options[:queues].count { |q| q == 'often' }
         assert_equal 3, Sidekiq.options[:queues].count { |q| q == 'seldom' }
       end
@@ -330,6 +305,30 @@ class TestCli < Sidekiq::Test
           assert opts[:strict]
         end
       end
+    end
+  end
+
+  describe 'misc' do
+    it 'handles interrupts' do
+      cli = Sidekiq::CLI.new
+      assert_raises Interrupt do
+        cli.handle_signal('INT')
+      end
+      assert_raises Interrupt do
+        cli.handle_signal('TERM')
+      end
+      cli.handle_signal('USR2')
+      cli.handle_signal('TTIN')
+    end
+
+    it 'can fire events' do
+      count = 0
+      Sidekiq.options[:lifecycle_events][:startup] = [proc {
+        count += 1
+      }]
+      cli = Sidekiq::CLI.new
+      cli.fire_event(:startup)
+      assert_equal 1, count
     end
   end
 

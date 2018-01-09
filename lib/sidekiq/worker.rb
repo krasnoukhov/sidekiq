@@ -24,6 +24,8 @@ module Sidekiq
     attr_accessor :jid
 
     def self.included(base)
+      raise ArgumentError, "You cannot include Sidekiq::Worker in an ActiveJob: #{base.name}" if base.ancestors.any? {|c| c.name == 'ActiveJob::Base' }
+
       base.extend(ClassMethods)
       base.class_attribute :sidekiq_options_hash
       base.class_attribute :sidekiq_retry_in_block
@@ -36,19 +38,31 @@ module Sidekiq
 
     module ClassMethods
 
+      def delay(*args)
+        raise ArgumentError, "Do not call .delay on a Sidekiq::Worker class, call .perform_async"
+      end
+
+      def delay_for(*args)
+        raise ArgumentError, "Do not call .delay_for on a Sidekiq::Worker class, call .perform_in"
+      end
+
+      def delay_until(*args)
+        raise ArgumentError, "Do not call .delay_until on a Sidekiq::Worker class, call .perform_at"
+      end
+
       def perform_async(*args)
         client_push('class' => self, 'args' => args)
       end
 
       def perform_in(interval, *args)
         int = interval.to_f
-        now = Time.now.to_f
-        ts = (int < 1_000_000_000 ? now + int : int)
+        now = Time.now
+        ts = (int < 1_000_000_000 ? (now + interval).to_f : int)
 
         item = { 'class' => self, 'args' => args, 'at' => ts }
 
         # Optimization to enqueue something now that is scheduled to go out now or in the past
-        item.delete('at') if ts <= now
+        item.delete('at'.freeze) if ts <= now.to_f
 
         client_push(item)
       end
@@ -64,8 +78,7 @@ module Sidekiq
       #      can be true, false or an integer number of lines to save, default *false*
       #   :pool - use the given Redis connection pool to push this type of job to a given shard.
       def sidekiq_options(opts={})
-        self.sidekiq_options_hash = get_sidekiq_options.merge((opts || {}).stringify_keys)
-        ::Sidekiq.logger.warn("#{self.name} - :timeout is unsafe and support has been removed from Sidekiq, see http://bit.ly/OtYpK for details") if opts.include? :timeout
+        self.sidekiq_options_hash = get_sidekiq_options.merge(opts.stringify_keys)
       end
 
       def sidekiq_retry_in(&block)

@@ -33,6 +33,7 @@ de:
   NextRetry: Nächster Versuch
   RetryCount: Anzahl der Versuche
   RetryNow: Jetzt erneut versuchen
+  Kill: Töten
   LastRetry: Letzter Versuch
   OriginallyFailed: Ursprünglich fehlgeschlagen
   AreYouSure: Bist du sicher?
@@ -46,7 +47,7 @@ de:
   GoBack: ← Zurück
   NoScheduledFound: Keine geplanten Jobs gefunden
   When: Wann
-  ScheduledJobs: Jobs in Wartschlange
+  ScheduledJobs: Jobs in der Warteschlange
   idle: inaktiv
   active: aktiv
   Version: Version

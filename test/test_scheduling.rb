@@ -1,22 +1,8 @@
-require 'helper'
+require_relative 'helper'
 require 'sidekiq/scheduled'
 
 class TestScheduling < Sidekiq::Test
   describe 'middleware' do
-    before do
-      Sidekiq::Client.instance_variable_set(:@default, nil)
-      @redis = Minitest::Mock.new
-      # Ugh, this is terrible.
-      Sidekiq.instance_variable_set(:@redis, @redis)
-      def @redis.multi; [yield] * 2 if block_given?; end
-      def @redis.with; yield self; end
-    end
-
-    after do
-      Sidekiq::Client.instance_variable_set(:@default, nil)
-      Sidekiq.instance_variable_set(:@redis, REDIS)
-    end
-
     class ScheduledWorker
       include Sidekiq::Worker
       sidekiq_options :queue => :custom_queue
@@ -24,29 +10,39 @@ class TestScheduling < Sidekiq::Test
       end
     end
 
-    it 'schedules a job via interval' do
-      @redis.expect :zadd, true, ['schedule', Array]
+    it 'schedules jobs' do
+      ss = Sidekiq::ScheduledSet.new
+      ss.clear
+
+      assert_equal 0, ss.size
+
       assert ScheduledWorker.perform_in(600, 'mike')
-      @redis.verify
-    end
+      assert_equal 1, ss.size
 
-    it 'schedules a job via timestamp' do
-      @redis.expect :zadd, true, ['schedule', Array]
+      assert ScheduledWorker.perform_in(1.month, 'mike')
+      assert_equal 2, ss.size
+
       assert ScheduledWorker.perform_in(5.days.from_now, 'mike')
-      @redis.verify
-    end
+      assert_equal 3, ss.size
 
-    it 'schedules job right away on negative timestamp/interval' do
-      @redis.expect :sadd,  true, ['queues', 'custom_queue']
-      @redis.expect :lpush, true, ['queue:custom_queue', Array]
+      q = Sidekiq::Queue.new("custom_queue")
+      qs = q.size
       assert ScheduledWorker.perform_in(-300, 'mike')
-      @redis.verify
+      assert_equal 3, ss.size
+      assert_equal qs+1, q.size
+
+      assert Sidekiq::Client.push_bulk('class' => ScheduledWorker, 'args' => [['mike'], ['mike']], 'at' => 600)
+      assert_equal 5, ss.size
     end
 
-    it 'schedules multiple jobs at once' do
-      @redis.expect :zadd, true, ['schedule', Array]
-      assert Sidekiq::Client.push_bulk('class' => ScheduledWorker, 'args' => [['mike'], ['mike']], 'at' => 600)
-      @redis.verify
+    it 'removes the enqueued_at field when scheduling' do
+      ss = Sidekiq::ScheduledSet.new
+      ss.clear
+
+      assert ScheduledWorker.perform_in(1.month, 'mike')
+      job = ss.first
+      assert job['created_at']
+      refute job['enqueued_at']
     end
   end
 

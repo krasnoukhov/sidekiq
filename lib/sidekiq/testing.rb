@@ -7,12 +7,12 @@ module Sidekiq
     class << self
       attr_accessor :__test_mode
 
-      def __set_test_mode(mode, &block)
-        if block
+      def __set_test_mode(mode)
+        if block_given?
           current_mode = self.__test_mode
           begin
             self.__test_mode = mode
-            block.call
+            yield
           ensure
             self.__test_mode = current_mode
           end
@@ -48,6 +48,12 @@ module Sidekiq
       def inline?
         self.__test_mode == :inline
       end
+
+      def server_middleware
+        @server_chain ||= Middleware::Chain.new
+        yield @server_chain if block_given?
+        @server_chain
+      end
     end
   end
 
@@ -66,12 +72,11 @@ module Sidekiq
         end
         true
       elsif Sidekiq::Testing.inline?
-        payloads.each do |item|
-          jid = item['jid'] || SecureRandom.hex(12)
-          marshalled = Sidekiq.load_json(Sidekiq.dump_json(item))
-          worker = marshalled['class'].constantize.new
-          worker.jid = jid
-          worker.perform(*marshalled['args'])
+        payloads.each do |job|
+          job['jid'] ||= SecureRandom.hex(12)
+          klass = job['class'].constantize
+          klass.jobs.unshift Sidekiq.load_json(Sidekiq.dump_json(job))
+          klass.perform_one
         end
         true
       else
@@ -151,9 +156,7 @@ module Sidekiq
       # Drain and run all jobs for this worker
       def drain
         while job = jobs.shift do
-          worker = new
-          worker.jid = job['jid']
-          worker.perform(*job['args'])
+          process_job(job)
         end
       end
 
@@ -161,9 +164,20 @@ module Sidekiq
       def perform_one
         raise(EmptyQueueError, "perform_one called with empty job queue") if jobs.empty?
         job = jobs.shift
+        process_job(job)
+      end
+
+      def process_job(job)
         worker = new
         worker.jid = job['jid']
-        worker.perform(*job['args'])
+        worker.bid = job['bid'] if worker.respond_to?(:bid=)
+        Sidekiq::Testing.server_middleware.invoke(worker, job, job['queue']) do
+          execute_job(worker, job['args'])
+        end
+      end
+
+      def execute_job(worker, args)
+        worker.perform(*args)
       end
     end
 

@@ -1,16 +1,21 @@
-require 'helper'
+require_relative 'helper'
 require 'sidekiq/manager'
 
 class TestManager < Sidekiq::Test
 
   describe 'manager' do
     before do
-      Sidekiq.redis = REDIS
       Sidekiq.redis {|c| c.flushdb }
     end
 
+    def new_manager(opts)
+      condvar = Minitest::Mock.new
+      condvar.expect(:signal, nil, [])
+      Sidekiq::Manager.new(condvar, opts)
+    end
+
     it 'creates N processor instances' do
-      mgr = Sidekiq::Manager.new(options)
+      mgr = new_manager(options)
       assert_equal options[:concurrency], mgr.ready.size
       assert_equal [], mgr.busy
     end
@@ -21,7 +26,7 @@ class TestManager < Sidekiq::Test
       processor.expect(:async, processor, [])
       processor.expect(:process, nil, [uow])
 
-      mgr = Sidekiq::Manager.new(options)
+      mgr = new_manager(options)
       mgr.ready << processor
       mgr.assign(uow)
       assert_equal 1, mgr.busy.size
@@ -33,7 +38,7 @@ class TestManager < Sidekiq::Test
       uow = Minitest::Mock.new
       uow.expect(:requeue, nil, [])
 
-      mgr = Sidekiq::Manager.new(options)
+      mgr = new_manager(options)
       mgr.fetcher = Sidekiq::BasicFetch.new({:queues => []})
       mgr.stop
       mgr.assign(uow)
@@ -41,7 +46,7 @@ class TestManager < Sidekiq::Test
     end
 
     it 'shuts down the system' do
-      mgr = Sidekiq::Manager.new(options)
+      mgr = new_manager(options)
       mgr.fetcher = Sidekiq::BasicFetch.new({:queues => []})
       mgr.stop
 
@@ -53,7 +58,7 @@ class TestManager < Sidekiq::Test
       fetcher = MiniTest::Mock.new
       fetcher.expect :async, fetcher, []
       fetcher.expect :fetch, nil, []
-      mgr = Sidekiq::Manager.new(options)
+      mgr = new_manager(options)
       mgr.fetcher = fetcher
       init_size = mgr.ready.size
       processor = mgr.ready.pop
@@ -69,7 +74,7 @@ class TestManager < Sidekiq::Test
       fetcher = MiniTest::Mock.new
       fetcher.expect :async, fetcher, []
       fetcher.expect :fetch, nil, []
-      mgr = Sidekiq::Manager.new(options)
+      mgr = new_manager(options)
       mgr.fetcher = fetcher
       init_size = mgr.ready.size
       processor = mgr.ready.pop
@@ -82,6 +87,11 @@ class TestManager < Sidekiq::Test
       fetcher.verify
     end
 
+    it 'does not support invalid concurrency' do
+      assert_raises(ArgumentError) { new_manager(concurrency: 0) }
+      assert_raises(ArgumentError) { new_manager(concurrency: -1) }
+    end
+
     describe 'heartbeat' do
       before do
         uow = Object.new
@@ -90,7 +100,7 @@ class TestManager < Sidekiq::Test
         @processor.expect(:async, @processor, [])
         @processor.expect(:process, nil, [uow])
 
-        @mgr = Sidekiq::Manager.new(options)
+        @mgr = new_manager(options)
         @mgr.ready << @processor
         @mgr.assign(uow)
 
@@ -104,18 +114,20 @@ class TestManager < Sidekiq::Test
 
       describe 'when manager is active' do
         before do
-          @mgr.heartbeat('identity', heartbeat_data)
+          Sidekiq::Manager::PROCTITLES << proc { "xyz" }
+          @mgr.heartbeat('identity', heartbeat_data, Sidekiq.dump_json(heartbeat_data))
+          Sidekiq::Manager::PROCTITLES.pop
         end
 
         it 'sets useful info to proctitle' do
-          assert_equal "sidekiq #{Sidekiq::VERSION} myapp [1 of 3 busy]", $0
+          assert_equal "sidekiq #{Sidekiq::VERSION} myapp [1 of 3 busy] xyz", $0
         end
 
         it 'stores process info in redis' do
           info = Sidekiq.redis { |c| c.hmget('identity', 'busy') }
           assert_equal ["1"], info
           expires = Sidekiq.redis { |c| c.pttl('identity') }
-          assert_in_delta 60000, expires, 10
+          assert_in_delta 60000, expires, 500
         end
       end
 
@@ -126,7 +138,7 @@ class TestManager < Sidekiq::Test
 
           @mgr.stop
           @mgr.processor_done(@processor)
-          @mgr.heartbeat('identity', heartbeat_data)
+          @mgr.heartbeat('identity', heartbeat_data, Sidekiq.dump_json(heartbeat_data))
 
           @processor.verify
         end
@@ -139,7 +151,7 @@ class TestManager < Sidekiq::Test
           info = Sidekiq.redis { |c| c.hmget('identity', 'busy') }
           assert_equal ["0"], info
           expires = Sidekiq.redis { |c| c.pttl('identity') }
-          assert_in_delta 60000, expires, 5
+          assert_in_delta 60000, expires, 50
         end
       end
     end

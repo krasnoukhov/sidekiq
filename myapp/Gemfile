@@ -9,9 +9,12 @@ platforms :jruby do
   gem 'activerecord-jdbcsqlite3-adapter'
 end
 
-gem 'rails', '~> 4.1.1'
+gem 'rails'
 gem 'sidekiq', :path => '..'
-gem 'capistrano'
+#gem 'ruby-prof'
+
+#de Does not work with jruby or rbx:
+#de gem 'pry-byebug'
 
 # sidekiq-web dependencies
 gem 'sinatra'

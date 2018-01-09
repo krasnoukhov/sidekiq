@@ -14,10 +14,26 @@ module Sidekiq
 
       def perform(yml)
         (target, method_name, args) = YAML.load(yml)
-        msg = target.__send__(method_name, *args)
+        msg = target.public_send(method_name, *args)
         # The email method can return nil, which causes ActionMailer to return
         # an undeliverable empty message.
-        msg.deliver if msg && (msg.to || msg.cc || msg.bcc) && msg.from
+        if msg
+          deliver(msg)
+        else
+          raise "#{target.name}##{method_name} returned an undeliverable mail object"
+        end
+      end
+
+      private
+
+      def deliver(msg)
+        if msg.respond_to?(:deliver_now)
+          # Rails 4.2/5.0
+          msg.deliver_now
+        else
+          # Rails 3.2/4.0/4.1
+          msg.deliver
+        end
       end
     end
 

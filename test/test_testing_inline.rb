@@ -1,6 +1,5 @@
-require 'helper'
-require 'sidekiq'
-require 'sidekiq/worker'
+require_relative 'helper'
+
 require 'active_record'
 require 'action_mailer'
 require 'sidekiq/rails'
@@ -42,7 +41,7 @@ class TestInline < Sidekiq::Test
     end
 
     before do
-      require 'sidekiq/testing/inline.rb'
+      require 'sidekiq/testing/inline'
       Sidekiq::Testing.inline!
     end
 
@@ -89,5 +88,6 @@ class TestInline < Sidekiq::Test
     it 'should relay parameters through json' do
       assert Sidekiq::Client.enqueue(InlineWorkerWithTimeParam, Time.now)
     end
+
   end
 end

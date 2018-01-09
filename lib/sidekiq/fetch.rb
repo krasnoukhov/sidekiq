@@ -35,7 +35,7 @@ module Sidekiq
 
         begin
           work = @strategy.retrieve_work
-          ::Sidekiq.logger.info("Redis is online, #{Time.now.to_f - @down.to_f} sec downtime") if @down
+          ::Sidekiq.logger.info("Redis is online, #{Time.now - @down} sec downtime") if @down
           @down = nil
 
           if work
@@ -71,7 +71,7 @@ module Sidekiq
       @down ||= Time.now
       pause
       after(0) { fetch }
-    rescue Task::TerminatedError
+    rescue Celluloid::TaskTerminated
       # If redis is down when we try to shut down, all the fetch backlog
       # raises these errors.  Haven't been able to figure out what I'm doing wrong.
     end
@@ -88,7 +88,7 @@ module Sidekiq
     end
 
     def self.done?
-      @done
+      defined?(@done) && @done
     end
 
     def self.strategy
