@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require_relative 'helper'
 
 class TestClient < Sidekiq::Test
@@ -30,6 +31,23 @@ class TestClient < Sidekiq::Test
       client = Sidekiq::Client.new
       jid = client.push('class' => 'Blah', 'args' => [1,2,3])
       assert_equal 24, jid.size
+    end
+
+    it 'allows middleware to stop bulk jobs' do
+      mware = Class.new do
+        def call(worker_klass,msg,q,r)
+          msg['args'][0] == 1 ? yield : false
+        end
+      end
+      client = Sidekiq::Client.new
+      client.middleware do |chain|
+        chain.add mware
+      end
+      q = Sidekiq::Queue.new
+      q.clear
+      result = client.push_bulk('class' => 'Blah', 'args' => [[1],[2],[3]])
+      assert_equal 1, result.size
+      assert_equal 1, q.size
     end
 
     it 'allows local middleware modification' do
@@ -108,6 +126,10 @@ class TestClient < Sidekiq::Test
         assert_match(/[0-9a-f]{12}/, jid)
       end
     end
+    it 'handles no jobs' do
+      result = Sidekiq::Client.push_bulk('class' => 'QueuedWorker', 'args' => [])
+      assert_equal 0, result.size
+    end
   end
 
   class BaseWorker
@@ -137,7 +159,7 @@ class TestClient < Sidekiq::Test
         chain.add Stopper
       end
 
-      assert_equal nil, client.push('class' => MyWorker, 'args' => [0])
+      assert_nil client.push('class' => MyWorker, 'args' => [0])
       assert_match(/[0-9a-f]{12}/, client.push('class' => MyWorker, 'args' => [1]))
       client.push_bulk('class' => MyWorker, 'args' => [[0], [1]]).each do |jid|
         assert_match(/[0-9a-f]{12}/, jid)
@@ -161,6 +183,18 @@ class TestClient < Sidekiq::Test
       conn.expect(:multi, [0, 1])
       DWorker.sidekiq_options('pool' => ConnectionPool.new(size: 1) { conn })
       DWorker.perform_async(1,2,3)
+      conn.verify
+    end
+
+    it 'allows #via to point to same Redi' do
+      conn = MiniTest::Mock.new
+      conn.expect(:multi, [0, 1])
+      sharded_pool = ConnectionPool.new(size: 1) { conn }
+      Sidekiq::Client.via(sharded_pool) do
+        Sidekiq::Client.via(sharded_pool) do
+          CWorker.perform_async(1,2,3)
+        end
+      end
       conn.verify
     end
 
@@ -189,6 +223,44 @@ class TestClient < Sidekiq::Test
       DWorker.sidekiq_options('pool' => ConnectionPool.new(size: 1) { conn })
       Sidekiq::Client.enqueue_in(10, DWorker, 3)
       conn.verify
+    end
+  end
+
+  describe 'Sidekiq::Worker#set' do
+    class SetWorker
+      include Sidekiq::Worker
+      sidekiq_options :queue => :foo, 'retry' => 12
+    end
+
+    def setup
+      Sidekiq.redis {|c| c.flushdb }
+    end
+
+    it 'allows option overrides' do
+      q = Sidekiq::Queue.new('bar')
+      assert_equal 0, q.size
+      assert SetWorker.set(queue: :bar).perform_async(1)
+      job = q.first
+      assert_equal 'bar', job['queue']
+      assert_equal 12, job['retry']
+    end
+
+    it 'handles symbols and strings' do
+      q = Sidekiq::Queue.new('bar')
+      assert_equal 0, q.size
+      assert SetWorker.set('queue' => 'bar', :retry => 11).perform_async(1)
+      job = q.first
+      assert_equal 'bar', job['queue']
+      assert_equal 11, job['retry']
+
+      q.clear
+      assert SetWorker.perform_async(1)
+      assert_equal 0, q.size
+
+      q = Sidekiq::Queue.new('foo')
+      job = q.first
+      assert_equal 'foo', job['queue']
+      assert_equal 12, job['retry']
     end
   end
 end

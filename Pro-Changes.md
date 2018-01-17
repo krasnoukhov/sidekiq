@@ -3,6 +3,180 @@ Sidekiq Pro Changelog
 
 Please see [http://sidekiq.org/](http://sidekiq.org/) for more details and how to buy.
 
+HEAD
+---------
+
+- Make Batch UI progress bar more friendly to the colorblind [#3387]
+
+3.4.5
+---------
+
+- Fix potential job loss with reliable scheduler when lots of jobs are scheduled
+  at precisely the same time. Thanks to raivil for his hard work in
+  reproducing the bug. [#3371]
+
+3.4.4
+---------
+
+- Optimize super\_fetch shutdown to restart jobs quicker [#3249]
+
+3.4.3
+---------
+
+- Limit reliable scheduler to enqueue up to 100 jobs per call, minimizing Redis latency [#3332]
+- Fix bug in super\_fetch logic for queues with `_` in the name [#3339]
+
+3.4.2
+---------
+
+- Add `Batch::Status#invalidated?` API which returns true if any/all
+  JIDs were invalidated within the batch. [#3326]
+
+3.4.1
+---------
+
+- Allow super\_fetch's orphan job check to happen as often as every hour [#3273]
+- Officially deprecate reliable\_fetch algorithm, I now recommend you use `super_fetch` instead:
+```ruby
+Sidekiq.configure_server do |config|
+  config.super_fetch!
+end
+```
+Also note that Sidekiq's `-i/--index` option is no longer used/relevant with super\_fetch.
+- Don't display "Delete/Retry All" buttons when filtering in Web UI [#3243]
+- Reimplement Sidekiq::JobSet#find\_job with ZSCAN [#3197]
+
+3.4.0
+---------
+
+- Introducing the newest reliable fetching algorithm: `super_fetch`!  This
+  algorithm will replace reliable\_fetch in Pro 4.0.  super\_fetch is
+  bullet-proof across all environments, no longer requiring stable
+  hostnames or an index to be set per-process. [#3077]
+```ruby
+Sidekiq.configure_server do |config|
+  config.super_fetch!
+end
+```
+  Thank you to @jonhyman for code review and the Sidekiq Pro customers that
+  beta tested super\_fetch.
+
+3.3.3
+---------
+
+- Update Web UI extension to work with Sidekiq 4.2.0's new Web UI. [#3075]
+
+3.3.2
+---------
+
+- Minimize batch memory usage after success [#3083]
+- Extract batch's 24 hr linger expiry to a LINGER constant so it can be tuned. [#3011]
+
+3.3.1
+---------
+
+- If environment is unset, treat it as development so reliable\_fetch works as before 3.2.2.
+
+3.3.0
+---------
+
+- Don't delete batches immediately upon success but set a 24 hr expiry, this allows
+  Sidekiq::Batch::Status#poll to work, even after batch success. [#3011]
+- New `Sidekiq::PendingSet#destroy(jid)` API to remove poison pill jobs [#3015]
+
+3.2.2
+---------
+
+- A default value for -i is only set in development now, staging or
+  other environments must set an index if you wish to use reliable\_fetch. [#2971]
+- Fix nil dereference when checking for jobs over timeout in timed\_fetch
+
+
+3.2.1
+---------
+
+- timed\_fetch now works with namespaces.  [ryansch]
+
+
+3.2.0
+---------
+
+- Fixed detection of missing batches, `NoSuchBatch` should be raised
+  properly now if `Sidekiq::Batch.new(bid)` is called on a batch no
+  longer in Redis.
+- Remove support for Pro 1.x format batches.  This version will no
+  longer seamlessly process batches created with Sidekiq Pro 1.x.
+  As always, upgrade one major version at a time to ensure a smooth
+  transition.
+- Fix edge case where a parent batch could expire before a child batch
+  was finished processing, leading to missing batches [#2889]
+
+2.1.5
+---------
+
+- Fix edge case where a parent batch could expire before a child batch
+  was finished processing, leading to missing batches [#2889]
+
+3.1.0
+---------
+
+- New container-friendly fetch algorithm: `timed_fetch`.  See the
+  [wiki documentation](https://github.com/mperham/sidekiq/wiki/Pro-Reliability-Server)
+  for trade offs between the two reliability options.  You should
+  use this if you are on Heroku, Docker, Amazon ECS or EBS or
+  another container-based system.
+
+
+3.0.6
+---------
+
+- Fix race condition on reliable fetch shutdown
+
+3.0.5
+---------
+
+- Statsd metrics now account for ActiveJob class names
+- Allow reliable fetch internals to be overridden [jonhyman]
+
+3.0.4
+---------
+
+- Queue pausing no longer requires reliable fetch. [#2786]
+
+3.0.3, 2.1.4
+------------
+
+- Convert Lua-based `Sidekiq::Queue#delete_by_class` to Ruby-based, to
+  avoid O(N^2) performance and possible Redis failure. [#2806]
+
+3.0.2
+-----------
+
+- Make job registration with batch part of the atomic push so batch
+  metadata can't get out of sync with the job data. [#2714]
+
+3.0.1
+-----------
+
+- Remove a number of Redis version checks since we can assume 2.8+ now.
+- Fix expiring jobs client middleware not loaded on server
+
+3.0.0
+-----------
+
+- See the [Pro 3.0 release notes](Pro-3.0-Upgrade.md).
+
+2.1.3
+-----------
+
+- Don't enable strict priority if using weighted queueing like `-q a,1 -q b,1`
+- Safer JSON mangling in Lua [#2639]
+
+2.1.2
+-----------
+
+- Lock Sidekiq Pro 2.x to Sidekiq 3.x.
+
 2.1.1
 -----------
 

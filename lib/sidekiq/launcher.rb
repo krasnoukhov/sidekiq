@@ -1,4 +1,5 @@
-require 'sidekiq/actor'
+# encoding: utf-8
+# frozen_string_literal: true
 require 'sidekiq/manager'
 require 'sidekiq/fetch'
 require 'sidekiq/scheduled'
@@ -9,82 +10,157 @@ module Sidekiq
   # If any of these actors die, the Sidekiq process exits
   # immediately.
   class Launcher
-    include Actor
     include Util
 
-    trap_exit :actor_died
-
-    attr_reader :manager, :poller, :fetcher
+    attr_accessor :manager, :poller, :fetcher
 
     def initialize(options)
-      @condvar = Celluloid::Condition.new
-      @manager = Sidekiq::Manager.new_link(@condvar, options)
-      @poller = Sidekiq::Scheduled::Poller.new_link
-      @fetcher = Sidekiq::Fetcher.new_link(@manager, options)
-      @manager.fetcher = @fetcher
+      @manager = Sidekiq::Manager.new(options)
+      @poller = Sidekiq::Scheduled::Poller.new
       @done = false
       @options = options
     end
 
-    def actor_died(actor, reason)
-      # https://github.com/mperham/sidekiq/issues/2057#issuecomment-66485477
-      return if @done || !reason
-
-      Sidekiq.logger.warn("Sidekiq died due to the following error, cannot recover, process exiting")
-      handle_exception(reason)
-      exit(1)
-    end
-
     def run
-      watchdog('Launcher#run') do
-        manager.async.start
-        poller.async.poll(true)
-
-        start_heartbeat
-      end
+      @thread = safe_thread("heartbeat", &method(:start_heartbeat))
+      @poller.start
+      @manager.start
     end
 
+    # Stops this instance from processing any more jobs,
+    #
+    def quiet
+      @done = true
+      @manager.quiet
+      @poller.terminate
+    end
+
+    # Shuts down the process.  This method does not
+    # return until all work is complete and cleaned up.
+    # It can take up to the timeout to complete.
     def stop
-      watchdog('Launcher#stop') do
-        @done = true
-        Sidekiq::Fetcher.done!
-        fetcher.terminate if fetcher.alive?
-        poller.terminate if poller.alive?
+      deadline = Time.now + @options[:timeout]
 
-        manager.async.stop(:shutdown => true, :timeout => @options[:timeout])
-        fire_event(:shutdown, true)
-        @condvar.wait
-        manager.terminate
+      @done = true
+      @manager.quiet
+      @poller.terminate
 
-        # Requeue everything in case there was a worker who grabbed work while stopped
-        # This call is a no-op in Sidekiq but necessary for Sidekiq Pro.
-        Sidekiq::Fetcher.strategy.bulk_requeue([], @options)
+      @manager.stop(deadline)
 
-        stop_heartbeat
-      end
+      # Requeue everything in case there was a worker who grabbed work while stopped
+      # This call is a no-op in Sidekiq but necessary for Sidekiq Pro.
+
+      # PATCH: Use centralized strategy fetching
+      strategy = Sidekiq::Fetcher.strategy(@options[:fetch])
+      strategy.bulk_requeue([], @options)
+
+      clear_heartbeat
     end
 
-    private
+    def stopping?
+      @done
+    end
+
+    private unless $TESTING
+
+    JVM_RESERVED_SIGNALS = ['USR1', 'USR2'] # Don't Process#kill if we get these signals via the API
+
+    def heartbeat
+      results = Sidekiq::CLI::PROCTITLES.map {|x| x.(self, to_data) }
+      results.compact!
+      $0 = results.join(' ')
+
+      ❤
+    end
+
+    def ❤
+      key = identity
+      fails = procd = 0
+      begin
+        Processor::FAILURE.update {|curr| fails = curr; 0 }
+        Processor::PROCESSED.update {|curr| procd = curr; 0 }
+
+        workers_key = "#{key}:workers".freeze
+        nowdate = Time.now.utc.strftime("%Y-%m-%d".freeze)
+        Sidekiq.redis do |conn|
+          conn.multi do
+            conn.incrby("stat:processed".freeze, procd)
+            conn.incrby("stat:processed:#{nowdate}", procd)
+            conn.incrby("stat:failed".freeze, fails)
+            conn.incrby("stat:failed:#{nowdate}", fails)
+            conn.del(workers_key)
+            Processor::WORKER_STATE.each_pair do |tid, hash|
+              conn.hset(workers_key, tid, Sidekiq.dump_json(hash))
+            end
+            conn.expire(workers_key, 60)
+          end
+        end
+        fails = procd = 0
+
+        _, exists, _, _, msg = Sidekiq.redis do |conn|
+          conn.multi do
+            conn.sadd('processes', key)
+            conn.exists(key)
+            conn.hmset(key, 'info', to_json, 'busy', Processor::WORKER_STATE.size, 'beat', Time.now.to_f, 'quiet', @done)
+            conn.expire(key, 60)
+            conn.rpop("#{key}-signals")
+          end
+        end
+
+        # first heartbeat or recovering from an outage and need to reestablish our heartbeat
+        fire_event(:heartbeat) if !exists
+
+        return unless msg
+
+        if JVM_RESERVED_SIGNALS.include?(msg)
+          Sidekiq::CLI.instance.handle_signal(msg)
+        else
+          ::Process.kill(msg, $$)
+        end
+      rescue => e
+        # ignore all redis/network issues
+        logger.error("heartbeat: #{e.message}")
+        # don't lose the counts if there was a network issue
+        Processor::PROCESSED.increment(procd)
+        Processor::FAILURE.increment(fails)
+      end
+    end
 
     def start_heartbeat
-      key = identity
-      data = {
-        'hostname' => hostname,
-        'started_at' => Time.now.to_f,
-        'pid' => $$,
-        'tag' => @options[:tag] || '',
-        'concurrency' => @options[:concurrency],
-        'queues' => @options[:queues].uniq,
-        'labels' => Sidekiq.options[:labels],
-        'identity' => identity,
-      }
-      # this data doesn't change so dump it to a string
-      # now so we don't need to dump it every heartbeat.
-      json = Sidekiq.dump_json(data)
-      manager.heartbeat(key, data, json)
+      while true
+        heartbeat
+        sleep 5
+      end
+      Sidekiq.logger.info("Heartbeat stopping...")
     end
 
-    def stop_heartbeat
+    def to_data
+      @data ||= begin
+        {
+          'hostname' => hostname,
+          'started_at' => Time.now.to_f,
+          'pid' => $$,
+          'tag' => @options[:tag] || '',
+          'concurrency' => @options[:concurrency],
+          'queues' => @options[:queues].uniq,
+          'labels' => @options[:labels],
+          'identity' => identity,
+        }
+      end
+    end
+
+    def to_json
+      @json ||= begin
+        # this data changes infrequently so dump it to a string
+        # now so we don't need to dump it every heartbeat.
+        Sidekiq.dump_json(to_data)
+      end
+    end
+
+    def clear_heartbeat
+      # Remove record from Redis since we are shutting down.
+      # Note we don't stop the heartbeat thread; if the process
+      # doesn't actually exit, it'll reappear in the Web UI.
       Sidekiq.redis do |conn|
         conn.pipelined do
           conn.srem('processes', identity)

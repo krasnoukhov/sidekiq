@@ -1,5 +1,223 @@
 # Sidekiq Changes
 
+HEAD
+-----------
+
+- Scheduled jobs can now be moved directly to the Dead queue via API [#3390]
+- Fix edge case leading to job duplication when using Sidekiq Pro's
+  reliability feature [#3388]
+- Fix error class name display on retry page [#3348]
+- More robust latency calculation [#3340]
+
+4.2.9
+-----------
+
+- Rollback [#3303] which broke Heroku Redis users [#3311]
+- Add support for TSTP signal, for Sidekiq 5.0 forward compatibility. [#3302]
+
+4.2.8
+-----------
+
+- Fix rare edge case with Redis driver that can create duplicate jobs [#3303]
+- Fix Rails 5 loading issue [#3275]
+- Restore missing tooltips to timestamps in Web UI [#3310]
+- Work on **Sidekiq 5.0** is now active! [#3301]
+
+4.2.7
+-----------
+
+- Add new integration testing to verify code loading and job execution
+  in development and production modes with Rails 4 and 5 [#3241]
+- Fix delayed extensions in development mode [#3227, DarthSim]
+- Use Worker's `retry` default if job payload does not have a retry
+  attribute [#3234, mlarraz]
+
+4.2.6
+-----------
+
+- Run Rails Executor when in production [#3221, eugeneius]
+
+4.2.5
+-----------
+
+- Re-enable eager loading of all code when running non-development Rails 5. [#3203]
+- Better root URL handling for zany web servers [#3207]
+
+4.2.4
+-----------
+
+- Log errors coming from the Rails 5 reloader. [#3212, eugeneius]
+- Clone job data so middleware changes don't appear in Busy tab
+
+4.2.3
+-----------
+
+- Disable use of Rails 5's Reloader API in non-development modes, it has proven
+  to be unstable under load [#3154]
+- Allow disabling of Sidekiq::Web's cookie session to handle the
+  case where the app provides a session already [#3180, inkstak]
+```ruby
+Sidekiq::Web.set :sessions, false
+```
+- Fix Web UI sharding support broken in 4.2.2. [#3169]
+- Fix timestamps not updating during UI polling [#3193, shaneog]
+- Relax rack-protection version to >= 1.5.0
+- Provide consistent interface to exception handlers, changing the structure of the context hash. [#3161]
+
+4.2.2
+-----------
+
+- Fix ever-increasing cookie size with nginx [#3146, cconstantine]
+- Fix so Web UI works without trailing slash [#3158, timdorr]
+
+4.2.1
+-----------
+
+- Ensure browser does not cache JSON/AJAX responses. [#3136]
+- Support old Sinatra syntax for setting config [#3139]
+
+4.2.0
+-----------
+
+- Enable development-mode code reloading.  **With Rails 5.0+, you don't need
+  to restart Sidekiq to pick up your Sidekiq::Worker changes anymore!** [#2457]
+- **Remove Sinatra dependency**.  Sidekiq's Web UI now uses Rack directly.
+  Thank you to Sidekiq's newest committer, **badosu**, for writing the code
+  and doing a lot of testing to ensure compatibility with many different
+  3rd party plugins.  If your Web UI works with 4.1.4 but fails with
+  4.2.0, please open an issue. [#3075]
+- Allow tuning of concurrency with the `RAILS_MAX_THREADS` env var. [#2985]
+  This is the same var used by Puma so you can tune all of your systems
+  the same way:
+```sh
+web: RAILS_MAX_THREADS=5 bundle exec puma ...
+worker: RAILS_MAX_THREADS=10 bundle exec sidekiq ...
+```
+Using `-c` or `config/sidekiq.yml` overrides this setting.  I recommend
+adjusting your `config/database.yml` to use it too so connections are
+auto-scaled:
+```yaml
+  pool: <%= ENV['RAILS_MAX_THREADS'] || 5 %>
+```
+
+4.1.4
+-----------
+
+- Unlock Sinatra so a Rails 5.0 compatible version may be used [#3048]
+- Fix race condition on startup with JRuby [#3043]
+
+
+4.1.3
+-----------
+
+- Please note the Redis 3.3.0 gem has a [memory leak](https://github.com/redis/redis-rb/issues/612),
+  Redis 3.2.2 is recommended until that issue is fixed.
+- Sinatra 1.4.x is now a required dependency, avoiding cryptic errors
+  and old bugs due to people not upgrading Sinatra for years. [#3042]
+- Fixed race condition in heartbeat which could rarely lead to lingering
+  processes on the Busy tab. [#2982]
+```ruby
+# To clean up lingering processes, modify this as necessary to connect to your Redis.
+# After 60 seconds, lingering processes should disappear from the Busy page.
+
+require 'redis'
+r = Redis.new(url: "redis://localhost:6379/0")
+# uncomment if you need a namespace
+#require 'redis-namespace'
+#r = Redis::Namespace.new("foo", r)
+r.smembers("processes").each do |pro|
+  r.expire(pro, 60)
+  r.expire("#{pro}:workers", 60)
+end
+```
+
+
+4.1.2
+-----------
+
+- Fix Redis data leak with worker data when a busy Sidekiq process
+  crashes.  You can find and expire leaked data in Redis with this
+script:
+```bash
+$ redis-cli keys  "*:workers" | while read LINE ; do TTL=`redis-cli expire "$LINE" 60`; echo "$LINE"; done;
+```
+  Please note that `keys` can be dangerous to run on a large, busy Redis.  Caveat runner.
+- Freeze all string literals with Ruby 2.3. [#2741]
+- Client middleware can now stop bulk job push. [#2887]
+
+4.1.1
+-----------
+
+- Much better behavior when Redis disappears and comes back. [#2866]
+- Update FR locale [dbachet]
+- Don't fill logfile in case of Redis downtime [#2860]
+- Allow definition of a global retries_exhausted handler. [#2807]
+```ruby
+Sidekiq.configure_server do |config|
+  config.default_retries_exhausted = -> (job, ex) do
+    Sidekiq.logger.info "#{job['class']} job is now dead"
+  end
+end
+```
+
+4.1.0
+-----------
+
+- Tag quiet processes in the Web UI [#2757, jcarlson]
+- Pass last exception to sidekiq\_retries\_exhausted block [#2787, Nowaker]
+```ruby
+class MyWorker
+  include Sidekiq::Worker
+  sidekiq_retries_exhausted do |job, exception|
+  end
+end
+```
+- Add native support for ActiveJob's `set(options)` method allowing
+you to override worker options dynamically.  This should make it
+even easier to switch between ActiveJob and Sidekiq's native APIs [#2780]
+```ruby
+class MyWorker
+  include Sidekiq::Worker
+  sidekiq_options queue: 'default', retry: true
+
+  def perform(*args)
+    # do something
+  end
+end
+
+MyWorker.set(queue: 'high', retry: false).perform_async(1)
+```
+
+4.0.2
+-----------
+
+- Better Japanese translations
+- Remove `json` gem dependency from gemspec. [#2743]
+- There's a new testing API based off the `Sidekiq::Queues` namespace. All
+  assertions made against the Worker class still work as expected.
+  [#2676, brandonhilkert]
+```ruby
+assert_equal 0, Sidekiq::Queues["default"].size
+HardWorker.perform_async("log")
+assert_equal 1, Sidekiq::Queues["default"].size
+assert_equal "log", Sidekiq::Queues["default"].first['args'][0]
+Sidekiq::Queues.clear_all
+```
+
+4.0.1
+-----------
+
+- Yank new queue-based testing API [#2663]
+- Fix invalid constant reference in heartbeat
+
+4.0.0
+-----------
+
+- Sidekiq's internals have been completely overhauled for performance
+  and to remove dependencies.  This has resulted in major speedups, as
+  [detailed on my blog](http://www.mikeperham.com/2015/10/14/optimizing-sidekiq/).
+- See the [4.0 upgrade notes](4.0-Upgrade.md) for more detail.
+
 3.5.4
 -----------
 
@@ -33,7 +251,7 @@
 -----------
 
 - **FIX MEMORY LEAK** Under rare conditions, threads may leak [#2598, gazay]
-- Add Ukranian locale [#2561, elrakita]
+- Add Ukrainian locale [#2561, elrakita]
 - Disconnect and retry Redis operations if we see a READONLY error [#2550]
 - Add server middleware testing harness; see [wiki](https://github.com/mperham/sidekiq/wiki/Testing#testing-server-middleware) [#2534, ryansch]
 

@@ -3,14 +3,16 @@ sudo: false
 cache: bundler
 services:
   - redis-server
-rvm:
-  - 2.1
-  - 2.0.0
-  - 2.2
-  - jruby
-  - jruby-head
-  - rbx-2
+before_install:
+  - gem install bundler
+  - gem update bundler
 matrix:
-  allow_failures:
-    - rvm: rbx-2
-    - rvm: jruby-head
+  include:
+    - rvm: 2.2.4
+      env: "PERCY_ENABLE=0"
+    - rvm: 2.3.0
+      env: "PERCY_ENABLE=0"
+    - rvm: 2.4.0
+      env: "PERCY_ENABLE=1"
+    - rvm: jruby-9.1.6.0
+      env: "PERCY_ENABLE=0"

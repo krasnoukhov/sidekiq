@@ -1,4 +1,5 @@
 # encoding: utf-8
+# frozen_string_literal: true
 $stdout.sync = true
 
 require 'yaml'
@@ -11,17 +12,17 @@ require 'sidekiq'
 require 'sidekiq/util'
 
 module Sidekiq
-  # We are shutting down Sidekiq but what about workers that
-  # are working on some long job?  This error is
-  # raised in workers that have not finished within the hard
-  # timeout limit.  This is needed to rollback db transactions,
-  # otherwise Ruby's Thread#kill will commit.  See #377.
-  # DO NOT RESCUE THIS ERROR.
-  class Shutdown < Interrupt; end
-
   class CLI
     include Util
     include Singleton unless $TESTING
+
+    PROCTITLES = [
+      proc { 'sidekiq'.freeze },
+      proc { Sidekiq::VERSION },
+      proc { |me, data| data['tag'] },
+      proc { |me, data| "[#{Processor::WORKER_STATE.size} of #{data['concurrency']} busy]" },
+      proc { |me, data| "stopping" if me.stopping? },
+    ]
 
     # Used for CLI testing
     attr_accessor :code
@@ -40,7 +41,6 @@ module Sidekiq
       validate!
       daemonize
       write_pid
-      load_celluloid
     end
 
     # Code within this method is not tested because it alters
@@ -52,7 +52,7 @@ module Sidekiq
 
       self_read, self_write = IO.pipe
 
-      %w(INT TERM USR1 USR2 TTIN).each do |sig|
+      %w(INT TERM USR1 USR2 TTIN TSTP).each do |sig|
         begin
           trap sig do
             self_write.puts(sig)
@@ -66,16 +66,20 @@ module Sidekiq
       logger.info Sidekiq::LICENSE
       logger.info "Upgrade to Sidekiq Pro for more features and support: http://sidekiq.org" unless defined?(::Sidekiq::Pro)
 
+      # touch the connection pool so it is created before we
+      # fire startup and start multithreading.
+      ver = Sidekiq.redis_info['redis_version']
+      raise "You are using Redis v#{ver}, Sidekiq requires Redis v2.8.0 or greater" if ver < '2.8'
+
+      # Touch middleware so it isn't lazy loaded by multiple threads, #3043
+      Sidekiq.server_middleware
+
+      # Before this point, the process is initializing with just the main thread.
+      # Starting here the process will now have multiple threads running.
       fire_event(:startup)
 
-      logger.debug {
-        "Middleware: #{Sidekiq.server_middleware.map(&:klass).join(', ')}"
-      }
-
-      Sidekiq.redis do |conn|
-        # touch the connection pool so it is created before we
-        # launch the actors.
-      end
+      logger.debug { "Client Middleware: #{Sidekiq.client_middleware.map(&:klass).join(', ')}" }
+      logger.debug { "Server Middleware: #{Sidekiq.server_middleware.map(&:klass).join(', ')}" }
 
       if !options[:daemon]
         logger.info 'Starting processing, hit Ctrl-C to stop'
@@ -96,6 +100,7 @@ module Sidekiq
         launcher.stop
         # Explicitly exit so busy Processor threads can't block
         # process shutdown.
+        logger.info "Bye!"
         exit(0)
       end
     end
@@ -129,8 +134,11 @@ module Sidekiq
         raise Interrupt
       when 'USR1'
         Sidekiq.logger.info "Received USR1, no longer accepting new work"
-        launcher.manager.async.stop
-        fire_event(:quiet, true)
+        launcher.quiet
+      when 'TSTP'
+        # USR1 is not available on JVM, allow TSTP as an alternate signal
+        Sidekiq.logger.info "Received TSTP, no longer accepting new work"
+        launcher.quiet
       when 'USR2'
         if Sidekiq.options[:logfile]
           Sidekiq.logger.info "Received USR2, reopening log file"
@@ -138,7 +146,7 @@ module Sidekiq
         end
       when 'TTIN'
         Thread.list.each do |thread|
-          Sidekiq.logger.warn "Thread TID-#{thread.object_id.to_s(36)} #{thread['label']}"
+          Sidekiq.logger.warn "Thread TID-#{thread.object_id.to_s(36)} #{thread['sidekiq_label']}"
           if thread.backtrace
             Sidekiq.logger.warn thread.backtrace.join("\n")
           else
@@ -157,19 +165,6 @@ module Sidekiq
         puts Sidekiq::CLI.banner
         puts "\e[0m"
       end
-    end
-
-    def load_celluloid
-      raise "Celluloid cannot be required until here, or it will break Sidekiq's daemonization" if defined?(::Celluloid) && options[:daemon]
-
-      # Celluloid can't be loaded until after we've daemonized
-      # because it spins up threads and creates locks which get
-      # into a very bad state if forked.
-      require 'celluloid/current'
-      Celluloid.logger = (options[:verbose] ? Sidekiq.logger : nil)
-
-      require 'sidekiq/manager'
-      require 'sidekiq/scheduled'
     end
 
     def daemonize
@@ -217,6 +212,8 @@ module Sidekiq
       opts = parse_config(cfile).merge(opts) if cfile
 
       opts[:strict] = true if opts[:strict].nil?
+      opts[:concurrency] = Integer(ENV["RAILS_MAX_THREADS"]) if !opts[:concurrency] && ENV["RAILS_MAX_THREADS"]
+      opts[:identity] = identity
 
       options.merge!(opts)
     end
@@ -236,18 +233,26 @@ module Sidekiq
           require 'sidekiq/rails'
           require File.expand_path("#{options[:require]}/config/environment.rb")
           ::Rails.application.eager_load!
-        else
+        elsif ::Rails::VERSION::MAJOR == 4
           # Painful contortions, see 1791 for discussion
+          # No autoloading, we want to force eager load for everything.
           require File.expand_path("#{options[:require]}/config/application.rb")
           ::Rails::Application.initializer "sidekiq.eager_load" do
             ::Rails.application.config.eager_load = true
           end
           require 'sidekiq/rails'
           require File.expand_path("#{options[:require]}/config/environment.rb")
+        else
+          # Rails 5+ && development mode, use Reloader
+          require 'sidekiq/rails'
+          require File.expand_path("#{options[:require]}/config/environment.rb")
         end
         options[:tag] ||= default_tag
       else
-        require options[:require]
+        not_required_message = "#{options[:require]} was not required, you should use an explicit path: " +
+            "./#{options[:require]} or /path/to/#{options[:require]}"
+
+        require(options[:require]) || raise(ArgumentError, not_required_message)
       end
     end
 

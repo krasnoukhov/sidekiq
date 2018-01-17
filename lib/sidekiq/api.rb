@@ -1,4 +1,5 @@
 # encoding: utf-8
+# frozen_string_literal: true
 require 'sidekiq'
 
 module Sidekiq
@@ -74,7 +75,10 @@ module Sidekiq
       enqueued     = pipe2_res[s..-1].map(&:to_i).inject(0, &:+)
 
       default_queue_latency = if (entry = pipe1_res[6].first)
-                                Time.now.to_f - Sidekiq.load_json(entry)['enqueued_at'.freeze]
+                                job = Sidekiq.load_json(entry)
+                                now = Time.now.to_f
+                                thence = job['enqueued_at'.freeze] || now
+                                now - thence
                               else
                                 0
                               end
@@ -191,8 +195,11 @@ module Sidekiq
   class Queue
     include Enumerable
 
+    ##
+    # Return all known queues within Redis.
+    #
     def self.all
-      Sidekiq.redis {|c| c.smembers('queues'.freeze) }.sort.map {|q| Sidekiq::Queue.new(q) }
+      Sidekiq.redis { |c| c.smembers('queues'.freeze) }.sort.map { |q| Sidekiq::Queue.new(q) }
     end
 
     attr_reader :name
@@ -211,12 +218,20 @@ module Sidekiq
       false
     end
 
+    ##
+    # Calculates this queue's latency, the difference in seconds since the oldest
+    # job in the queue was enqueued.
+    #
+    # @return Float
     def latency
       entry = Sidekiq.redis do |conn|
         conn.lrange(@rname, -1, -1)
       end.first
       return 0 unless entry
-      Time.now.to_f - Sidekiq.load_json(entry)['enqueued_at']
+      job = Sidekiq.load_json(entry)
+      now = Time.now.to_f
+      thence = job['enqueued_at'] || now
+      now - thence
     end
 
     def each
@@ -225,9 +240,9 @@ module Sidekiq
       page = 0
       page_size = 50
 
-      loop do
+      while true do
         range_start = page * page_size - deleted_size
-        range_end   = page * page_size - deleted_size + (page_size - 1)
+        range_end   = range_start + page_size - 1
         entries = Sidekiq.redis do |conn|
           conn.lrange @rname, range_start, range_end
         end
@@ -240,6 +255,11 @@ module Sidekiq
       end
     end
 
+    ##
+    # Find the job with the given JID within this queue.
+    #
+    # This is a slow, inefficient operation.  Do not use under
+    # normal conditions.  Sidekiq Pro contains a faster version.
     def find_job(jid)
       detect { |j| j.jid == jid }
     end
@@ -264,6 +284,7 @@ module Sidekiq
   #
   class Job
     attr_reader :item
+    attr_reader :value
 
     def initialize(item, queue_name=nil)
       @value = item
@@ -283,7 +304,13 @@ module Sidekiq
                      "#{target}.#{method}"
                    end
                  when "ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper"
-                   @item['wrapped'] || args[0]
+                   job_class = @item['wrapped'] || args[0]
+                   if 'ActionMailer::DeliveryJob' == job_class
+                     # MailerClass#mailer_method
+                     args[0]['arguments'][0..1].join('#')
+                   else
+                    job_class
+                   end
                  else
                    klass
                  end
@@ -297,7 +324,13 @@ module Sidekiq
                     arg
                   end
                 when "ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper"
-                  @item['wrapped'] ? args[0]["arguments"] : []
+                  job_args = @item['wrapped'] ? args[0]["arguments"] : []
+                  if 'ActionMailer::DeliveryJob' == (@item['wrapped'] || args[0])
+                   # remove MailerClass, mailer_method and 'deliver_now'
+                   job_args.drop(3)
+                  else
+                   job_args
+                  end
                 else
                   args
                 end
@@ -324,7 +357,8 @@ module Sidekiq
     end
 
     def latency
-      Time.now.to_f - (@item['enqueued_at'] || @item['created_at'])
+      now = Time.now.to_f
+      now - (@item['enqueued_at'] || @item['created_at'] || now)
     end
 
     ##
@@ -337,7 +371,7 @@ module Sidekiq
     end
 
     def [](name)
-      @item.__send__(:[], name)
+      @item[name]
     end
 
     private
@@ -389,10 +423,9 @@ module Sidekiq
     end
 
     def retry
-      raise "Retry not available on jobs which have not failed" unless item["failed_at"]
       remove_job do |message|
         msg = Sidekiq.load_json(message)
-        msg['retry_count'] -= 1
+        msg['retry_count'] -= 1 if msg['retry_count']
         Sidekiq::Client.push(msg)
       end
     end
@@ -400,9 +433,7 @@ module Sidekiq
     ##
     # Place job in the dead set
     def kill
-      raise 'Kill not available on jobs which have not failed' unless item['failed_at']
       remove_job do |message|
-        Sidekiq.logger.info { "Killing job #{message['jid']}" }
         now = Time.now.to_f
         Sidekiq.redis do |conn|
           conn.multi do
@@ -412,6 +443,10 @@ module Sidekiq
           end
         end
       end
+    end
+
+    def error?
+      !!item['error_class']
     end
 
     private
@@ -488,9 +523,9 @@ module Sidekiq
       page = -1
       page_size = 50
 
-      loop do
+      while true do
         range_start = page * page_size + offset_size
-        range_end   = page * page_size + offset_size + (page_size - 1)
+        range_end   = range_start + page_size - 1
         elements = Sidekiq.redis do |conn|
           conn.zrange name, range_start, range_end, with_scores: true
         end
@@ -519,6 +554,11 @@ module Sidekiq
       end
     end
 
+    ##
+    # Find the job with the given JID within this sorted set.
+    #
+    # This is a slow, inefficient operation.  Do not use under
+    # normal conditions.  Sidekiq Pro contains a faster version.
     def find_job(jid)
       self.detect { |j| j.jid == jid }
     end
@@ -553,13 +593,13 @@ module Sidekiq
   # Allows enumeration of scheduled jobs within Sidekiq.
   # Based on this, you can search/filter for jobs.  Here's an
   # example where I'm selecting all jobs of a certain type
-  # and deleting them from the retry queue.
+  # and deleting them from the schedule queue.
   #
   #   r = Sidekiq::ScheduledSet.new
-  #   r.select do |retri|
-  #     retri.klass == 'Sidekiq::Extensions::DelayedClass' &&
-  #     retri.args[0] == 'User' &&
-  #     retri.args[1] == 'setup_new_subscriber'
+  #   r.select do |scheduled|
+  #     scheduled.klass == 'Sidekiq::Extensions::DelayedClass' &&
+  #     scheduled.args[0] == 'User' &&
+  #     scheduled.args[1] == 'setup_new_subscriber'
   #   end.map(&:delete)
   class ScheduledSet < JobSet
     def initialize
@@ -621,7 +661,6 @@ module Sidekiq
   #
   # Yields a Sidekiq::Process.
   #
-
   class ProcessSet
     include Enumerable
 
@@ -662,13 +701,13 @@ module Sidekiq
         # you'll be happier this way
         result = conn.pipelined do
           procs.each do |key|
-            conn.hmget(key, 'info', 'busy', 'beat')
+            conn.hmget(key, 'info', 'busy', 'beat', 'quiet')
           end
         end
 
-        result.each do |info, busy, at_s|
+        result.each do |info, busy, at_s, quiet|
           hash = Sidekiq.load_json(info)
-          yield Process.new(hash.merge('busy' => busy.to_i, 'beat' => at_s.to_f))
+          yield Process.new(hash.merge('busy' => busy.to_i, 'beat' => at_s.to_f, 'quiet' => quiet))
         end
       end
 
@@ -685,7 +724,8 @@ module Sidekiq
   end
 
   #
-  # Sidekiq::Process has a set of attributes which look like this:
+  # Sidekiq::Process represents an active Sidekiq process talking with Redis.
+  # Each process has a set of attributes which look like this:
   #
   # {
   #   'hostname' => 'app-1.example.com',
@@ -727,6 +767,10 @@ module Sidekiq
       signal('TTIN')
     end
 
+    def stopping?
+      self['quiet'] == 'true'
+    end
+
     private
 
     def signal(sig)
@@ -745,6 +789,7 @@ module Sidekiq
   end
 
   ##
+  # A worker is a thread that is currently processing a job.
   # Programmatic access to the current active worker set.
   #
   # WARNING WARNING WARNING

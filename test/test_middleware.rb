@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require_relative 'helper'
 require 'sidekiq/middleware/chain'
 require 'sidekiq/processor'
@@ -79,12 +80,10 @@ class TestMiddleware < Sidekiq::Test
       end
 
       boss = Minitest::Mock.new
+      boss.expect(:options, {:queues => ['default'] }, [])
+      boss.expect(:options, {:queues => ['default'] }, [])
       processor = Sidekiq::Processor.new(boss)
-      actor = Minitest::Mock.new
-      actor.expect(:processor_done, nil, [processor])
-      actor.expect(:real_thread, nil, [nil, Thread])
-      boss.expect(:async, actor, [])
-      boss.expect(:async, actor, [])
+      boss.expect(:processor_done, nil, [processor])
       processor.process(Sidekiq::BasicFetch::UnitOfWork.new('queue:default', msg))
       assert_equal %w(2 before 3 before 1 before work_performed 1 after 3 after 2 after), $recorder.flatten
     end
@@ -113,7 +112,7 @@ class TestMiddleware < Sidekiq::Test
 
       final_action = nil
       chain.invoke { final_action = true }
-      assert_equal nil, final_action
+      assert_nil final_action
       assert_equal [], recorder
     end
   end

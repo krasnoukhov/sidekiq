@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require_relative 'helper'
 require 'sidekiq/scheduled'
 
@@ -8,6 +9,11 @@ class TestScheduling < Sidekiq::Test
       sidekiq_options :queue => :custom_queue
       def perform(x)
       end
+    end
+
+    # Assume we can pass any class as time to perform_in
+    class TimeDuck
+      def to_f; 42.0 end
     end
 
     it 'schedules jobs' do
@@ -33,6 +39,9 @@ class TestScheduling < Sidekiq::Test
 
       assert Sidekiq::Client.push_bulk('class' => ScheduledWorker, 'args' => [['mike'], ['mike']], 'at' => 600)
       assert_equal 5, ss.size
+
+      assert ScheduledWorker.perform_in(TimeDuck.new, 'samwise')
+      assert_equal 6, ss.size
     end
 
     it 'removes the enqueued_at field when scheduling' do

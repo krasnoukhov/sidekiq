@@ -1,6 +1,7 @@
 # encoding: utf-8
+# frozen_string_literal: true
 require 'sidekiq/version'
-fail "Sidekiq #{Sidekiq::VERSION} does not support Ruby 1.9." if RUBY_PLATFORM != 'java' && RUBY_VERSION < '2.0.0'
+fail "Sidekiq #{Sidekiq::VERSION} does not support Ruby versions below 2.0.0." if RUBY_PLATFORM != 'java' && RUBY_VERSION < '2.0.0'
 
 require 'sidekiq/logging'
 require 'sidekiq/client'
@@ -27,15 +28,26 @@ module Sidekiq
       startup: [],
       quiet: [],
       shutdown: [],
+      heartbeat: [],
     },
     dead_max_jobs: 10_000,
-    dead_timeout_in_seconds: 180 * 24 * 60 * 60 # 6 months
+    dead_timeout_in_seconds: 180 * 24 * 60 * 60, # 6 months
+    reloader: proc { |&block| block.call },
+    executor: proc { |&block| block.call },
   }
 
   DEFAULT_WORKER_OPTIONS = {
     'retry' => true,
     'queue' => 'default'
   }
+
+  FAKE_INFO = {
+    "redis_version" => "9.9.9",
+    "uptime_in_days" => "9999",
+    "connected_clients" => "9999",
+    "used_memory_human" => "9P",
+    "used_memory_peak_human" => "9P"
+  }.freeze
 
   def self.❨╯°□°❩╯︵┻━┻
     puts "Calm down, yo."
@@ -44,7 +56,6 @@ module Sidekiq
   def self.options
     @options ||= DEFAULTS.dup
   end
-
   def self.options=(opts)
     @options = opts
   end
@@ -91,6 +102,24 @@ module Sidekiq
     end
   end
 
+  def self.redis_info
+    redis do |conn|
+      begin
+        # admin commands can't go through redis-namespace starting
+        # in redis-namespace 2.0
+        if conn.respond_to?(:namespace)
+          conn.redis.info
+        else
+          conn.info
+        end
+      rescue Redis::CommandError => ex
+        #2850 return fake version when INFO command has (probably) been renamed
+        raise unless ex.message =~ /unknown command/
+        FAKE_INFO
+      end
+    end
+  end
+
   def self.redis_pool
     @redis ||= Sidekiq::RedisConnection.create
   end
@@ -110,23 +139,43 @@ module Sidekiq
   end
 
   def self.server_middleware
-    @server_chain ||= Processor.default_middleware
+    @server_chain ||= default_server_middleware
     yield @server_chain if block_given?
     @server_chain
+  end
+
+  def self.default_server_middleware
+    require 'sidekiq/middleware/server/retry_jobs'
+    require 'sidekiq/middleware/server/logging'
+
+    Middleware::Chain.new do |m|
+      m.add Middleware::Server::RetryJobs
+      m.add Middleware::Server::Logging
+    end
   end
 
   def self.default_worker_options=(hash)
     @default_worker_options = default_worker_options.merge(hash.stringify_keys)
   end
-
   def self.default_worker_options
     defined?(@default_worker_options) ? @default_worker_options : DEFAULT_WORKER_OPTIONS
+  end
+
+  # Sidekiq.configure_server do |config|
+  #   config.default_retries_exhausted = -> (job, ex) do
+  #   end
+  # end
+  def self.default_retries_exhausted=(prok)
+    @default_retries_exhausted = prok
+  end
+  @default_retries_exhausted = ->(job, ex) { }
+  def self.default_retries_exhausted
+    @default_retries_exhausted
   end
 
   def self.load_json(string)
     JSON.parse(string)
   end
-
   def self.dump_json(object)
     JSON.generate(object)
   end
@@ -134,19 +183,8 @@ module Sidekiq
   def self.logger
     Sidekiq::Logging.logger
   end
-
   def self.logger=(log)
     Sidekiq::Logging.logger = log
-  end
-
-  # When set, overrides Sidekiq.options[:average_scheduled_poll_interval] and sets
-  # the average interval that this process will delay before checking for
-  # scheduled jobs or job retries that are ready to run.
-  #
-  # See sidekiq/scheduled.rb for an in-depth explanation of this value
-  def self.poll_interval=(interval)
-    $stderr.puts "DEPRECATION: `config.poll_interval = #{interval}` will be removed in Sidekiq 4. Please update to `config.average_scheduled_poll_interval = #{interval}`."
-    self.options[:poll_interval_average] = interval
   end
 
   # How frequently Redis should be checked by a random Sidekiq process for
@@ -182,6 +220,15 @@ module Sidekiq
     raise ArgumentError, "Invalid event name: #{event}" unless options[:lifecycle_events].key?(event)
     options[:lifecycle_events][event] << block
   end
+
+  # We are shutting down Sidekiq but what about workers that
+  # are working on some long job?  This error is
+  # raised in workers that have not finished within the hard
+  # timeout limit.  This is needed to rollback db transactions,
+  # otherwise Ruby's Thread#kill will commit.  See #377.
+  # DO NOT RESCUE THIS ERROR IN YOUR WORKERS
+  class Shutdown < Interrupt; end
+
 end
 
 require 'sidekiq/extensions/class_methods'

@@ -1,4 +1,4 @@
-<%= erb :_job_info, :locals => {:job => @retry, :type => :retry} %>
+<%= erb :_job_info, locals: { job: @retry, type: :retry } %>
 
 <h3><%= t('Error') %></h3>
 <div class="table_container">
@@ -7,7 +7,7 @@
       <tr>
         <th><%= t('ErrorClass') %></th>
         <td>
-          <code><%= @retry['error_class'] %></code>
+          <code><%= h @retry['error_class'] %></code>
         </td>
       </tr>
       <tr>

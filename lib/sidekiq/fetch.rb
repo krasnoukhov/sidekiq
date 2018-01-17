@@ -1,116 +1,68 @@
+# frozen_string_literal: true
 require 'sidekiq'
-require 'sidekiq/util'
-require 'sidekiq/actor'
 
 module Sidekiq
-  ##
-  # The Fetcher blocks on Redis, waiting for a message to process
-  # from the queues.  It gets the message and hands it to the Manager
-  # to assign to a ready Processor.
+  # PATCH: Centralize fetch strategy
   class Fetcher
-    include Util
-    include Actor
-
-    TIMEOUT = 1
-
-    attr_reader :down
-
-    def initialize(mgr, options)
-      @down = nil
-      @mgr = mgr
-      @strategy = Fetcher.strategy.new(options)
-    end
-
-    # Fetching is straightforward: the Manager makes a fetch
-    # request for each idle processor when Sidekiq starts and
-    # then issues a new fetch request every time a Processor
-    # finishes a message.
-    #
-    # Because we have to shut down cleanly, we can't block
-    # forever and we can't loop forever.  Instead we reschedule
-    # a new fetch if the current fetch turned up nothing.
-    def fetch
-      watchdog('Fetcher#fetch died') do
-        return if Sidekiq::Fetcher.done?
-
-        begin
-          work = @strategy.retrieve_work
-          ::Sidekiq.logger.info("Redis is online, #{Time.now - @down} sec downtime") if @down
-          @down = nil
-
-          if work
-            @mgr.async.assign(work)
-          else
-            # Patch: Next fetch after timeout (prevent 100% cpu load)
-            if @strategy.is_a?(ScheduleFetch)
-              after(TIMEOUT) { fetch }
-            else
-              after(0) { fetch }
-            end
-          end
-        rescue => ex
-          handle_fetch_exception(ex)
-        end
-
-      end
-    end
-
-    private
-
-    def pause
-      sleep(TIMEOUT)
-    end
-
-    def handle_fetch_exception(ex)
-      if !@down
-        logger.error("Error fetching message: #{ex}")
-        ex.backtrace.each do |bt|
-          logger.error(bt)
-        end
-      end
-      @down ||= Time.now
-      pause
-      after(0) { fetch }
-    rescue Celluloid::TaskTerminated
-      # If redis is down when we try to shut down, all the fetch backlog
-      # raises these errors.  Haven't been able to figure out what I'm doing wrong.
-    end
-
-    # Ugh.  Say hello to a bloody hack.
-    # Can't find a clean way to get the fetcher to just stop processing
-    # its mailbox when shutdown starts.
-    def self.done!
-      @done = true
-    end
-
-    def self.reset # testing only
-      @done = nil
-    end
-
-    def self.done?
-      defined?(@done) && @done
-    end
-
-    def self.strategy
+    def self.strategy(strategy=nil)
       if ENV['SCHEDULE']
         ScheduleFetch
       else
-        Sidekiq.options[:fetch] || BasicFetch
+        strategy || BasicFetch
       end
     end
   end
 
   class BasicFetch
+    # We want the fetch operation to timeout every few seconds so the thread
+    # can check if the process is shutting down.
+    TIMEOUT = 2
+
+    UnitOfWork = Struct.new(:queue, :job) do
+      def acknowledge
+        # nothing to do
+      end
+
+      def queue_name
+        queue.sub(/.*queue:/, ''.freeze)
+      end
+
+      def requeue
+        Sidekiq.redis do |conn|
+          conn.rpush("queue:#{queue_name}", job)
+        end
+      end
+    end
+
     def initialize(options)
       @strictly_ordered_queues = !!options[:strict]
       @queues = options[:queues].map { |q| "queue:#{q}" }
-      @unique_queues = @queues.uniq
+      if @strictly_ordered_queues
+        @queues = @queues.uniq
+        @queues << TIMEOUT
+      end
     end
 
     def retrieve_work
       work = Sidekiq.redis { |conn| conn.brpop(*queues_cmd) }
       UnitOfWork.new(*work) if work
     end
+
+    # Creating the Redis#brpop command takes into account any
+    # configured queue weights. By default Redis#brpop returns
+    # data from the first queue that has pending elements. We
+    # recreate the queue command each time we invoke Redis#brpop
+    # to honor weights and avoid queue starvation.
+    def queues_cmd
+      if @strictly_ordered_queues
+        @queues
+      else
+        queues = @queues.shuffle.uniq
+        queues << TIMEOUT
+        queues
+      end
+    end
+
 
     # By leaving this as a class method, it can be pluggable and used by the Manager actor. Making it
     # an instance method will make it async to the Fetcher actor
@@ -121,7 +73,7 @@ module Sidekiq
       jobs_to_requeue = {}
       inprogress.each do |unit_of_work|
         jobs_to_requeue[unit_of_work.queue_name] ||= []
-        jobs_to_requeue[unit_of_work.queue_name] << unit_of_work.message
+        jobs_to_requeue[unit_of_work.queue_name] << unit_of_work.job
       end
 
       Sidekiq.redis do |conn|
@@ -131,36 +83,11 @@ module Sidekiq
           end
         end
       end
-      Sidekiq.logger.info("Pushed #{inprogress.size} messages back to Redis")
+      Sidekiq.logger.info("Pushed #{inprogress.size} jobs back to Redis")
     rescue => ex
       Sidekiq.logger.warn("Failed to requeue #{inprogress.size} jobs: #{ex.message}")
     end
 
-    UnitOfWork = Struct.new(:queue, :message) do
-      def acknowledge
-        # nothing to do
-      end
-
-      def queue_name
-        queue.gsub(/.*queue:/, '')
-      end
-
-      def requeue
-        Sidekiq.redis do |conn|
-          conn.rpush("queue:#{queue_name}", message)
-        end
-      end
-    end
-
-    # Creating the Redis#brpop command takes into account any
-    # configured queue weights. By default Redis#brpop returns
-    # data from the first queue that has pending elements. We
-    # recreate the queue command each time we invoke Redis#brpop
-    # to honor weights and avoid queue starvation.
-    def queues_cmd
-      queues = @strictly_ordered_queues ? @unique_queues.dup : @queues.shuffle.uniq
-      queues << Sidekiq::Fetcher::TIMEOUT
-    end
   end
 
   # PATCH: Scheduled fetcher strategy
@@ -170,7 +97,7 @@ module Sidekiq
       if val then redis.call('zrem', KEYS[1], val[1]) end
       return val[1]
     LUA
-    
+
     def initialize(options)
       @queues = %w(schedule)
     end
@@ -180,16 +107,16 @@ module Sidekiq
         sorted_set = @queues.sample
         namespace = conn.namespace
         now = Time.now.to_f.to_s
-        
+
         message = conn.eval(ZPOP, ["#{namespace}:#{sorted_set}", now], {})
         if message
           msg = Sidekiq.load_json(message)
-          
+
           # Keep message in schedule
           if sorted_set == 'schedule'
             conn.zadd('schedule', (Time.new + msg['expiration']).to_f.to_s, message)
           end
-          
+
           ["queue:#{msg['queue']}", message]
         end
       }

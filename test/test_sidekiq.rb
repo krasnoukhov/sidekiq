@@ -1,4 +1,5 @@
 # encoding: utf-8
+# frozen_string_literal: true
 require_relative 'helper'
 
 class TestSidekiq < Sidekiq::Test
@@ -94,6 +95,13 @@ class TestSidekiq < Sidekiq::Test
       end
       assert_equal 2, counts.size
       assert_equal counts[0] + 1, counts[1]
+    end
+  end
+
+  describe 'redis info' do
+    it 'calls the INFO command which returns at least redis_version' do
+      output = Sidekiq.redis_info
+      assert_includes output.keys, "redis_version"
     end
   end
 end

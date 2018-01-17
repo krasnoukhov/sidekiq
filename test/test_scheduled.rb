@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require_relative 'helper'
 require 'sidekiq/scheduled'
 
@@ -37,7 +38,7 @@ class TestScheduled < Sidekiq::Test
         @scheduled.schedule (Time.now - 60).to_f, @future_2
         @scheduled.schedule (Time.now - 60).to_f, @future_3
 
-        @poller.poll
+        @poller.enqueue
 
         assert_equal 0, Sidekiq::Queue.new("queue_1").size
         assert_equal 1, Sidekiq::Queue.new("queue_2").size
@@ -63,7 +64,7 @@ class TestScheduled < Sidekiq::Test
       end
 
       Time.stub(:now, enqueued_time) do
-        @poller.poll
+        @poller.enqueue
 
         Sidekiq.redis do |conn|
           #PATCH: Only retry sets
@@ -96,7 +97,7 @@ class TestScheduled < Sidekiq::Test
     it 'generates random intervals that target a configured average' do
       with_sidekiq_option(:poll_interval_average, 10) do
         i = 500
-        intervals = i.times.map{ @poller.send(:random_poll_interval) }
+        intervals = Array.new(i){ @poller.send(:random_poll_interval) }
 
         assert intervals.all?{|x| x >= 5}
         assert intervals.all?{|x| x <= 15}

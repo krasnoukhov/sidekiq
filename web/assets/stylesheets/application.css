@@ -293,7 +293,7 @@ img.smallogo {
 }
 
 .status-sprite {
-  background-image: url(../images/status-sd8051fd480.png);
+  background-image: url(../images/status.png);
   height: 19px;
   width: 20px;
   display: inline-block;
@@ -747,4 +747,33 @@ div.interval-slider input {
   .redis-namespace {
     max-width: 350px;
   }
+}
+
+.redis-url {
+  text-overflow: ellipsis;
+}
+
+.product-version {
+  color:white;
+}
+
+.warning-messages {
+  margin-top: 20px;
+  margin-bottom: 10px;
+}
+
+.toggle {
+  display: none;
+}
+
+.box {
+  width: 50%;
+}
+
+.checkbox-column {
+  width: 20px;
+}
+
+.delete-confirm {
+  width: 20%;
 }

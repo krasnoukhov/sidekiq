@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'socket'
 require 'securerandom'
 require 'sidekiq/exception_handler'
@@ -17,6 +18,13 @@ module Sidekiq
     rescue Exception => ex
       handle_exception(ex, { context: last_words })
       raise ex
+    end
+
+    def safe_thread(name, &block)
+      Thread.new do
+        Thread.current['sidekiq_label'] = name
+        watchdog(name, &block)
+      end
     end
 
     def logger
@@ -46,23 +54,10 @@ module Sidekiq
         begin
           block.call
         rescue => ex
-          handle_exception(ex, { event: event })
+          handle_exception(ex, { context: "Exception during Sidekiq lifecycle event.", event: event })
         end
       end
+      arr.clear
     end
-
-    def want_a_hertz_donut?
-      # what's a hertz donut?
-      # punch!  Hurts, don't it?
-      info = Sidekiq.redis {|c| c.info }
-      if info['connected_clients'].to_i > 1000 && info['hz'].to_i >= 10
-        Sidekiq.logger.warn { "Your Redis `hz` setting is too high at #{info['hz']}.  See mperham/sidekiq#2431.  Set it to 3 in #{info[:config_file]}" }
-        true
-      else
-        Sidekiq.logger.debug { "Redis hz: #{info['hz']}.  Client count: #{info['connected_clients']}" }
-        false
-      end
-    end
-
   end
 end

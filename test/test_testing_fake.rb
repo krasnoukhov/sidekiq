@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require_relative 'helper'
 
 require 'active_record'
@@ -54,13 +55,16 @@ class TestTesting < Sidekiq::Test
 
     after do
       Sidekiq::Testing.disable!
+      Sidekiq::Queues.clear_all
     end
 
     it 'stubs the async call' do
       assert_equal 0, DirectWorker.jobs.size
       assert DirectWorker.perform_async(1, 2)
+      assert_in_delta Time.now.to_f, DirectWorker.jobs.last['enqueued_at'], 0.01
       assert_equal 1, DirectWorker.jobs.size
       assert DirectWorker.perform_in(10, 1, 2)
+      refute DirectWorker.jobs.last['enqueued_at']
       assert_equal 2, DirectWorker.jobs.size
       assert DirectWorker.perform_at(10, 1, 2)
       assert_equal 3, DirectWorker.jobs.size
@@ -93,7 +97,7 @@ class TestTesting < Sidekiq::Test
     it 'stubs the enqueue_to call' do
       assert_equal 0, EnqueuedWorker.jobs.size
       assert Sidekiq::Client.enqueue_to('someq', EnqueuedWorker, 1, 2)
-      assert_equal 1, EnqueuedWorker.jobs.size
+      assert_equal 1, Sidekiq::Queues['someq'].size
     end
 
     it 'executes all stored jobs' do
@@ -260,9 +264,96 @@ class TestTesting < Sidekiq::Test
       assert_equal 1, SecondWorker.count
     end
 
+    it 'drains jobs of workers with symbolized queue names' do
+      Sidekiq::Worker.jobs.clear
+
+      AltQueueWorker.perform_async(5,6)
+      assert_equal 1, AltQueueWorker.jobs.size
+
+      Sidekiq::Worker.drain_all
+      assert_equal 0, AltQueueWorker.jobs.size
+    end
+
     it 'can execute a job' do
       DirectWorker.execute_job(DirectWorker.new, [2, 3])
     end
+  end
 
+  describe 'queue testing' do
+    before do
+      require 'sidekiq/testing'
+      Sidekiq::Testing.fake!
+    end
+
+    after do
+      Sidekiq::Testing.disable!
+      Sidekiq::Queues.clear_all
+    end
+
+    class QueueWorker
+      include Sidekiq::Worker
+      def perform(a, b)
+        a + b
+      end
+    end
+
+    class AltQueueWorker
+      include Sidekiq::Worker
+      sidekiq_options queue: :alt
+      def perform(a, b)
+        a + b
+      end
+    end
+
+    it 'finds enqueued jobs' do
+      assert_equal 0, Sidekiq::Queues["default"].size
+
+      QueueWorker.perform_async(1, 2)
+      QueueWorker.perform_async(1, 2)
+      AltQueueWorker.perform_async(1, 2)
+
+      assert_equal 2, Sidekiq::Queues["default"].size
+      assert_equal [1, 2], Sidekiq::Queues["default"].first["args"]
+
+      assert_equal 1, Sidekiq::Queues["alt"].size
+    end
+
+    it 'clears out all queues' do
+      assert_equal 0, Sidekiq::Queues["default"].size
+
+      QueueWorker.perform_async(1, 2)
+      QueueWorker.perform_async(1, 2)
+      AltQueueWorker.perform_async(1, 2)
+
+      Sidekiq::Queues.clear_all
+
+      assert_equal 0, Sidekiq::Queues["default"].size
+      assert_equal 0, QueueWorker.jobs.size
+      assert_equal 0, Sidekiq::Queues["alt"].size
+      assert_equal 0, AltQueueWorker.jobs.size
+    end
+
+    it 'finds jobs enqueued by client' do
+      Sidekiq::Client.push(
+        'class' => 'NonExistentWorker',
+        'queue' => 'missing',
+        'args' => [1]
+      )
+
+      assert_equal 1, Sidekiq::Queues["missing"].size
+    end
+
+    it 'respects underlying array changes' do
+      # Rspec expect change() syntax saves a reference to
+      # an underlying array. When the array containing jobs is
+      # derived, Rspec test using `change(QueueWorker.jobs, :size).by(1)`
+      # won't pass. This attempts to recreate that scenario
+      # by saving a reference to the jobs array and ensuring
+      # it changes properly on enqueueing
+      jobs = QueueWorker.jobs
+      assert_equal 0, jobs.size
+      QueueWorker.perform_async(1, 2)
+      assert_equal 1, jobs.size
+    end
   end
 end
