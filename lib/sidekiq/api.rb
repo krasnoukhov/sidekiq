@@ -75,7 +75,7 @@ module Sidekiq
       enqueued     = pipe2_res[s..-1].map(&:to_i).inject(0, &:+)
 
       default_queue_latency = if (entry = pipe1_res[6].first)
-                                job = Sidekiq.load_json(entry)
+                                job = Sidekiq.load_json(entry) rescue {}
                                 now = Time.now.to_f
                                 thence = job['enqueued_at'.freeze] || now
                                 now - thence
@@ -146,11 +146,11 @@ module Sidekiq
       end
 
       def processed
-        date_stat_hash("processed")
+        @processed ||= date_stat_hash("processed")
       end
 
       def failed
-        date_stat_hash("failed")
+        @failed ||= date_stat_hash("failed")
       end
 
       private
@@ -169,10 +169,15 @@ module Sidekiq
           i += 1
         end
 
-        Sidekiq.redis do |conn|
-          conn.mget(keys).each_with_index do |value, idx|
-            stat_hash[dates[idx]] = value ? value.to_i : 0
+        begin
+          Sidekiq.redis do |conn|
+            conn.mget(keys).each_with_index do |value, idx|
+              stat_hash[dates[idx]] = value ? value.to_i : 0
+            end
           end
+        rescue Redis::CommandError
+          # mget will trigger a CROSSSLOT error when run against a Cluster
+          # TODO Someone want to add Cluster support?
         end
 
         stat_hash
@@ -287,13 +292,25 @@ module Sidekiq
     attr_reader :value
 
     def initialize(item, queue_name=nil)
+      @args = nil
       @value = item
-      @item = item.is_a?(Hash) ? item : Sidekiq.load_json(item)
+      @item = item.is_a?(Hash) ? item : parse(item)
       @queue = queue_name || @item['queue']
     end
 
+    def parse(item)
+      Sidekiq.load_json(item)
+    rescue JSON::ParserError
+      # If the job payload in Redis is invalid JSON, we'll load
+      # the item as an empty hash and store the invalid JSON as
+      # the job 'args' for display in the Web UI.
+      @invalid = true
+      @args = [item]
+      {}
+    end
+
     def klass
-      @item['class']
+      self['class']
     end
 
     def display_class
@@ -318,38 +335,42 @@ module Sidekiq
 
     def display_args
       # Unwrap known wrappers so they show up in a human-friendly manner in the Web UI
-      @args ||= case klass
+      @display_args ||= case klass
                 when /\ASidekiq::Extensions::Delayed/
                   safe_load(args[0], args) do |_, _, arg|
                     arg
                   end
                 when "ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper"
-                  job_args = @item['wrapped'] ? args[0]["arguments"] : []
-                  if 'ActionMailer::DeliveryJob' == (@item['wrapped'] || args[0])
-                   # remove MailerClass, mailer_method and 'deliver_now'
-                   job_args.drop(3)
+                  job_args = self['wrapped'] ? args[0]["arguments"] : []
+                  if 'ActionMailer::DeliveryJob' == (self['wrapped'] || args[0])
+                    # remove MailerClass, mailer_method and 'deliver_now'
+                    job_args.drop(3)
                   else
-                   job_args
+                    job_args
                   end
                 else
+                  if self['encrypt'.freeze]
+                    # no point in showing 150+ bytes of random garbage
+                    args[-1] = '[encrypted data]'.freeze
+                  end
                   args
                 end
     end
 
     def args
-      @item['args']
+      @args || @item['args']
     end
 
     def jid
-      @item['jid']
+      self['jid']
     end
 
     def enqueued_at
-      @item['enqueued_at'] ? Time.at(@item['enqueued_at']).utc : nil
+      self['enqueued_at'] ? Time.at(self['enqueued_at']).utc : nil
     end
 
     def created_at
-      Time.at(@item['created_at'] || @item['enqueued_at'] || 0).utc
+      Time.at(self['created_at'] || self['enqueued_at'] || 0).utc
     end
 
     def queue
@@ -371,7 +392,10 @@ module Sidekiq
     end
 
     def [](name)
-      @item[name]
+      # nil will happen if the JSON fails to parse.
+      # We don't guarantee Sidekiq will work with bad job JSON but we should
+      # make a best effort to minimize the damage.
+      @item ? @item[name] : nil
     end
 
     private
@@ -434,14 +458,7 @@ module Sidekiq
     # Place job in the dead set
     def kill
       remove_job do |message|
-        now = Time.now.to_f
-        Sidekiq.redis do |conn|
-          conn.multi do
-            conn.zadd('dead', now, message)
-            conn.zremrangebyscore('dead', '-inf', now - DeadSet.timeout)
-            conn.zremrangebyrank('dead', 0, - DeadSet.max_jobs)
-          end
-        end
+        DeadSet.new.kill(message)
       end
     end
 
@@ -639,6 +656,17 @@ module Sidekiq
       super 'dead'
     end
 
+    def kill(message)
+      now = Time.now.to_f
+      Sidekiq.redis do |conn|
+        conn.multi do
+          conn.zadd(name, now.to_s, message)
+          conn.zremrangebyscore(name, '-inf', now - self.class.timeout)
+          conn.zremrangebyrank(name, 0, - self.class.max_jobs)
+        end
+      end
+    end
+
     def retry_all
       while size > 0
         each(&:retry)
@@ -706,6 +734,11 @@ module Sidekiq
         end
 
         result.each do |info, busy, at_s, quiet|
+          # If a process is stopped between when we query Redis for `procs` and
+          # when we query for `result`, we will have an item in `result` that is
+          # composed of `nil` values.
+          next if info.nil?
+
           hash = Sidekiq.load_json(info)
           yield Process.new(hash.merge('busy' => busy.to_i, 'beat' => at_s.to_f, 'quiet' => quiet))
         end
@@ -720,6 +753,18 @@ module Sidekiq
     # 60 seconds.
     def size
       Sidekiq.redis { |conn| conn.scard('processes') }
+    end
+
+    # Returns the identity of the current cluster leader or "" if no leader.
+    # This is a Sidekiq Enterprise feature, will always return "" in Sidekiq
+    # or Sidekiq Pro.
+    def leader
+      @leader ||= begin
+        x = Sidekiq.redis {|c| c.get("dear-leader") }
+        # need a non-falsy value so we can memoize
+        x = "" unless x
+        x
+      end
     end
   end
 
@@ -755,8 +800,12 @@ module Sidekiq
       @attribs[key]
     end
 
+    def identity
+      self['identity']
+    end
+
     def quiet!
-      signal('USR1')
+      signal('TSTP')
     end
 
     def stop!
@@ -783,9 +832,6 @@ module Sidekiq
       end
     end
 
-    def identity
-      self['identity']
-    end
   end
 
   ##

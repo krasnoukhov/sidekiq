@@ -2,7 +2,6 @@
 require 'socket'
 require 'securerandom'
 require 'sidekiq/exception_handler'
-require 'sidekiq/core_ext'
 
 module Sidekiq
   ##
@@ -22,7 +21,7 @@ module Sidekiq
 
     def safe_thread(name, &block)
       Thread.new do
-        Thread.current['sidekiq_label'] = name
+        Thread.current['sidekiq_label'.freeze] = name
         watchdog(name, &block)
       end
     end

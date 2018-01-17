@@ -8,8 +8,11 @@ module Sidekiq
     class << self
 
       def create(options={})
-        options = options.symbolize_keys
+        options.keys.each do |key|
+          options[key.to_sym] = options.delete(key)
+        end
 
+        options[:id] = "Sidekiq-#{Sidekiq.server? ? "server" : "client"}-PID-#{$$}" if !options.has_key?(:id)
         options[:url] ||= determine_redis_provider
 
         size = options[:size] || (Sidekiq.server? ? (Sidekiq.options[:concurrency] + 5) : 5)
@@ -67,7 +70,7 @@ module Sidekiq
           opts.delete(:network_timeout)
         end
 
-        opts[:driver] ||= 'ruby'
+        opts[:driver] ||= 'ruby'.freeze
 
         # Issue #3303, redis-rb will silently retry an operation.
         # This can lead to duplicate jobs if Sidekiq::Client's LPUSH
@@ -98,7 +101,15 @@ module Sidekiq
       end
 
       def determine_redis_provider
-        ENV[ENV['REDIS_PROVIDER'] || 'REDIS_URL']
+        # If you have this in your environment:
+        # MY_REDIS_URL=redis://hostname.example.com:1238/4
+        # then set:
+        # REDIS_PROVIDER=MY_REDIS_URL
+        # and Sidekiq will find your custom URL variable with no custom
+        # initialization code at all.
+        ENV[
+          ENV['REDIS_PROVIDER'] || 'REDIS_URL'
+        ]
       end
 
     end

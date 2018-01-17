@@ -335,7 +335,7 @@ class TestCli < Sidekiq::Test
       end
     end
 
-    describe 'handles USR1 and USR2' do
+    describe 'handles TSTP and USR2' do
       before do
         @tmp_log_path = '/tmp/sidekiq.log'
         @cli.parse(['sidekiq', '-L', @tmp_log_path, '-r', './test/fake_env.rb'])
@@ -351,7 +351,7 @@ class TestCli < Sidekiq::Test
           count += 1
         }]
         @cli.launcher = Sidekiq::Launcher.new(Sidekiq.options)
-        @cli.handle_signal('USR1')
+        @cli.handle_signal('TSTP')
 
         assert_equal 1, count
       end

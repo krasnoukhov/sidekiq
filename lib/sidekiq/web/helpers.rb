@@ -15,7 +15,7 @@ module Sidekiq
         settings.locales.each_with_object({}) do |path, global|
           find_locale_files(lang).each do |file|
             strs = YAML.load(File.open(file))
-            global.deep_merge!(strs[lang])
+            global.merge!(strs[lang])
           end
         end
       end
@@ -24,12 +24,17 @@ module Sidekiq
     def clear_caches
       @@strings = nil
       @@locale_files = nil
+      @@available_locales = nil
     end
 
     def locale_files
       @@locale_files ||= settings.locales.flat_map do |path|
         Dir["#{path}/*.yml"]
       end
+    end
+
+    def available_locales
+      @@available_locales ||= locale_files.map { |path| File.basename(path, '.yml') }.uniq
     end
 
     def find_locale_files(lang)
@@ -65,20 +70,44 @@ module Sidekiq
       end
     end
 
-    # Given a browser request Accept-Language header like
-    # "fr-FR,fr;q=0.8,en-US;q=0.6,en;q=0.4,ru;q=0.2", this function
-    # will return "fr" since that's the first code with a matching
-    # locale in web/locales
+    def text_direction
+      get_locale['TextDirection'] || 'ltr'
+    end
+
+    def rtl?
+      text_direction == 'rtl'
+    end
+
+    # See https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.4
+    def user_preferred_languages
+      languages = env['HTTP_ACCEPT_LANGUAGE'.freeze]
+      languages.to_s.downcase.gsub(/\s+/, '').split(',').map do |language|
+        locale, quality = language.split(';q=', 2)
+        locale  = nil if locale == '*' # Ignore wildcards
+        quality = quality ? quality.to_f : 1.0
+        [locale, quality]
+      end.sort do |(_, left), (_, right)|
+        right <=> left
+      end.map(&:first).compact
+    end
+
+    # Given an Accept-Language header like "fr-FR,fr;q=0.8,en-US;q=0.6,en;q=0.4,ru;q=0.2"
+    # this method will try to best match the available locales to the user's preferred languages.
+    #
+    # Inspiration taken from https://github.com/iain/http_accept_language/blob/master/lib/http_accept_language/parser.rb
     def locale
       @locale ||= begin
-        locale = 'en'.freeze
-        languages = env['HTTP_ACCEPT_LANGUAGE'.freeze] || 'en'.freeze
-        languages.downcase.split(','.freeze).each do |lang|
-          next if lang == '*'.freeze
-          lang = lang.split(';'.freeze)[0]
-          break locale = lang if find_locale_files(lang).any?
-        end
-        locale
+        matched_locale = user_preferred_languages.map do |preferred|
+          preferred_language = preferred.split('-', 2).first
+
+          lang_group = available_locales.select do |available|
+            preferred_language == available.split('-', 2).first
+          end
+
+          lang_group.find { |lang| lang == preferred } || lang_group.min_by(&:length)
+        end.compact.first
+
+        matched_locale || 'en'
       end
     end
 
@@ -119,7 +148,8 @@ module Sidekiq
     end
 
     def redis_connection
-      Sidekiq.redis { |conn| conn.client.id }
+      attrs = Sidekiq.redis { |conn| conn.connection }
+      "redis://#{attrs[:location]}/#{attrs[:db]}"
     end
 
     def namespace
@@ -144,7 +174,7 @@ module Sidekiq
 
     def relative_time(time)
       stamp = time.getutc.iso8601
-      %{<time title="#{stamp}" datetime="#{stamp}">#{time}</time>}
+      %{<time class="ltr" dir="ltr" title="#{stamp}" datetime="#{stamp}">#{time}</time>}
     end
 
     def job_params(job, score)
@@ -160,7 +190,11 @@ module Sidekiq
 
     # Merge options with current params, filter safe params, and stringify to query string
     def qparams(options)
-      options = options.stringify_keys
+      # stringify
+      options.keys.each do |key|
+        options[key.to_s] = options.delete(key)
+      end
+
       params.merge(options).map do |key, value|
         SAFE_QPARAMS.include?(key) ? "#{key}=#{CGI.escape(value.to_s)}" : next
       end.compact.join("&")
@@ -248,6 +282,10 @@ module Sidekiq
 
     def product_version
       "Sidekiq v#{Sidekiq::VERSION}"
+    end
+
+    def server_utc_time
+      Time.now.utc.strftime('%H:%M:%S UTC')
     end
 
     def redis_connection_and_namespace

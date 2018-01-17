@@ -48,8 +48,14 @@ module Sidekiq
     #   queue - the named queue to use, default 'default'
     #   class - the worker class to call, required
     #   args - an array of simple arguments to the perform method, must be JSON-serializable
+    #   at - timestamp to schedule the job (optional), must be Numeric (e.g. Time.now.to_f)
     #   retry - whether to retry this job if it fails, default true or an integer number of retries
     #   backtrace - whether to save any error backtrace, default false
+    #
+    # If class is set to the class name, the jobs' options will be based on Sidekiq's default
+    # worker options. Otherwise, they will be based on the job class's options.
+    #
+    # Any options valid for a worker class's sidekiq_options are also available here.
     #
     # All options must be strings, not symbols.  NB: because we are serializing to JSON, all
     # symbols in 'args' will be converted to strings.  Note that +backtrace: true+ can take quite a bit of
@@ -62,11 +68,11 @@ module Sidekiq
     #
     def push(item)
       normed = normalize_item(item)
-      payload = process_single(item['class'], normed)
+      payload = process_single(item['class'.freeze], normed)
 
       if payload
         raw_push([payload])
-        payload['jid']
+        payload['jid'.freeze]
       end
     end
 
@@ -83,19 +89,19 @@ module Sidekiq
     # Returns an array of the of pushed jobs' jids.  The number of jobs pushed can be less
     # than the number given if the middleware stopped processing for one or more jobs.
     def push_bulk(items)
-      arg = items['args'].first
+      arg = items['args'.freeze].first
       return [] unless arg # no jobs to push
       raise ArgumentError, "Bulk arguments must be an Array of Arrays: [[1], [2]]" if !arg.is_a?(Array)
 
       normed = normalize_item(items)
-      payloads = items['args'].map do |args|
-        copy = normed.merge('args' => args, 'jid' => SecureRandom.hex(12), 'enqueued_at' => Time.now.to_f)
-        result = process_single(items['class'], copy)
+      payloads = items['args'.freeze].map do |args|
+        copy = normed.merge('args'.freeze => args, 'jid'.freeze => SecureRandom.hex(12), 'enqueued_at'.freeze => Time.now.to_f)
+        result = process_single(items['class'.freeze], copy)
         result ? result : nil
       end.compact
 
       raw_push(payloads) if !payloads.empty?
-      payloads.collect { |payload| payload['jid'] }
+      payloads.collect { |payload| payload['jid'.freeze] }
     end
 
     # Allows sharding of jobs across any number of Redis instances.  All jobs
@@ -139,14 +145,14 @@ module Sidekiq
       # Messages are enqueued to the 'default' queue.
       #
       def enqueue(klass, *args)
-        klass.client_push('class' => klass, 'args' => args)
+        klass.client_push('class'.freeze => klass, 'args'.freeze => args)
       end
 
       # Example usage:
       #   Sidekiq::Client.enqueue_to(:queue_name, MyWorker, 'foo', 1, :bat => 'bar')
       #
       def enqueue_to(queue, klass, *args)
-        klass.client_push('queue' => queue, 'class' => klass, 'args' => args)
+        klass.client_push('queue'.freeze => queue, 'class'.freeze => klass, 'args'.freeze => args)
       end
 
       # Example usage:
@@ -157,7 +163,7 @@ module Sidekiq
         now = Time.now.to_f
         ts = (int < 1_000_000_000 ? now + int : int)
 
-        item = { 'class' => klass, 'args' => args, 'at' => ts, 'queue' => queue }
+        item = { 'class'.freeze => klass, 'args'.freeze => args, 'at'.freeze => ts, 'queue'.freeze => queue }
         item.delete('at'.freeze) if ts <= now
 
         klass.client_push(item)
@@ -184,13 +190,13 @@ module Sidekiq
 
     def atomic_push(conn, payloads)
       # PATCH: Retry to queue
-      if payloads.first['at'] && !payloads.first['failed_at']
+      if payloads.first['at'.freeze] && !payloads.first['failed_at'.freeze]
         conn.zadd('schedule'.freeze, payloads.map do |hash|
           at = hash.delete('at'.freeze).to_s
           [at, Sidekiq.dump_json(hash)]
         end)
       else
-        q = payloads.first['queue']
+        q = payloads.first['queue'.freeze]
         now = Time.now.to_f
         to_push = payloads.map do |entry|
           entry['enqueued_at'.freeze] = now
@@ -202,7 +208,7 @@ module Sidekiq
     end
 
     def process_single(worker_class, item)
-      queue = item['queue']
+      queue = item['queue'.freeze]
 
       middleware.invoke(worker_class, item, queue, @redis_pool) do
         item
@@ -213,6 +219,7 @@ module Sidekiq
       raise(ArgumentError, "Job must be a Hash with 'class' and 'args' keys: { 'class' => SomeWorker, 'args' => ['bob', 1, :foo => 'bar'] }") unless item.is_a?(Hash) && item.has_key?('class'.freeze) && item.has_key?('args'.freeze)
       raise(ArgumentError, "Job args must be an Array") unless item['args'].is_a?(Array)
       raise(ArgumentError, "Job class must be either a Class or String representation of the class name") unless item['class'.freeze].is_a?(Class) || item['class'.freeze].is_a?(String)
+      raise(ArgumentError, "Job 'at' must be a Numeric timestamp") if item.has_key?('at'.freeze) && !item['at'].is_a?(Numeric)
       #raise(ArgumentError, "Arguments must be native JSON types, see https://github.com/mperham/sidekiq/wiki/Best-Practices") unless JSON.load(JSON.dump(item['args'])) == item['args']
 
       normalized_hash(item['class'.freeze])

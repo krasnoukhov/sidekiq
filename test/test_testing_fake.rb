@@ -1,15 +1,7 @@
 # frozen_string_literal: true
 require_relative 'helper'
 
-require 'active_record'
-require 'action_mailer'
-require 'sidekiq/rails'
-require 'sidekiq/extensions/action_mailer'
-require 'sidekiq/extensions/active_record'
-
-Sidekiq.hook_rails!
-
-class TestTesting < Sidekiq::Test
+class TestFake < Sidekiq::Test
   describe 'sidekiq testing' do
     class PerformError < RuntimeError; end
 
@@ -34,18 +26,6 @@ class TestTesting < Sidekiq::Test
       end
     end
 
-    class FooMailer < ActionMailer::Base
-      def bar(str)
-        str
-      end
-    end
-
-    class FooModel < ActiveRecord::Base
-      def bar(str)
-        str
-      end
-    end
-
     before do
       require 'sidekiq/testing'
       Sidekiq::Testing.fake!
@@ -61,31 +41,44 @@ class TestTesting < Sidekiq::Test
     it 'stubs the async call' do
       assert_equal 0, DirectWorker.jobs.size
       assert DirectWorker.perform_async(1, 2)
-      assert_in_delta Time.now.to_f, DirectWorker.jobs.last['enqueued_at'], 0.01
+      assert_in_delta Time.now.to_f, DirectWorker.jobs.last['enqueued_at'], 0.1
       assert_equal 1, DirectWorker.jobs.size
       assert DirectWorker.perform_in(10, 1, 2)
       refute DirectWorker.jobs.last['enqueued_at']
       assert_equal 2, DirectWorker.jobs.size
       assert DirectWorker.perform_at(10, 1, 2)
       assert_equal 3, DirectWorker.jobs.size
-      assert_in_delta 10.seconds.from_now.to_f, DirectWorker.jobs.last['at'], 0.01
+      assert_in_delta 10.seconds.from_now.to_f, DirectWorker.jobs.last['at'], 0.1
     end
 
-    it 'stubs the delay call on mailers' do
-      assert_equal 0, Sidekiq::Extensions::DelayedMailer.jobs.size
-      FooMailer.delay.bar('hello!')
-      assert_equal 1, Sidekiq::Extensions::DelayedMailer.jobs.size
-    end
-
-    class Something
-      def self.foo(x)
+    describe 'delayed' do
+      require 'action_mailer'
+      class FooMailer < ActionMailer::Base
+        def bar(str)
+          str
+        end
       end
-    end
 
-    it 'stubs the delay call on models' do
-      assert_equal 0, Sidekiq::Extensions::DelayedClass.jobs.size
-      Something.delay.foo(Date.today)
-      assert_equal 1, Sidekiq::Extensions::DelayedClass.jobs.size
+      before do
+        Sidekiq::Extensions.enable_delay!
+      end
+
+      it 'stubs the delay call on mailers' do
+        assert_equal 0, Sidekiq::Extensions::DelayedMailer.jobs.size
+        FooMailer.delay.bar('hello!')
+        assert_equal 1, Sidekiq::Extensions::DelayedMailer.jobs.size
+      end
+
+      class Something
+        def self.foo(x)
+        end
+      end
+
+      it 'stubs the delay call on classes' do
+        assert_equal 0, Sidekiq::Extensions::DelayedClass.jobs.size
+        Something.delay.foo(Date.today)
+        assert_equal 1, Sidekiq::Extensions::DelayedClass.jobs.size
+      end
     end
 
     it 'stubs the enqueue call' do
@@ -113,7 +106,7 @@ class TestTesting < Sidekiq::Test
 
     class SpecificJidWorker
       include Sidekiq::Worker
-      class_attribute :count
+      sidekiq_class_attribute :count
       self.count = 0
       def perform(worker_jid)
         return unless worker_jid == self.jid
@@ -168,7 +161,7 @@ class TestTesting < Sidekiq::Test
 
     class FirstWorker
       include Sidekiq::Worker
-      class_attribute :count
+      sidekiq_class_attribute :count
       self.count = 0
       def perform
         self.class.count += 1
@@ -177,7 +170,7 @@ class TestTesting < Sidekiq::Test
 
     class SecondWorker
       include Sidekiq::Worker
-      class_attribute :count
+      sidekiq_class_attribute :count
       self.count = 0
       def perform
         self.class.count += 1
@@ -186,7 +179,7 @@ class TestTesting < Sidekiq::Test
 
     class ThirdWorker
       include Sidekiq::Worker
-      class_attribute :count
+      sidekiq_class_attribute :count
       def perform
         FirstWorker.perform_async
         SecondWorker.perform_async

@@ -1,11 +1,36 @@
-Sidekiq Pro Changelog
-=======================
+# Sidekiq Pro Changelog
+
+[Sidekiq Changes](https://github.com/mperham/sidekiq/blob/master/Changes.md) | [Sidekiq Pro Changes](https://github.com/mperham/sidekiq/blob/master/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/mperham/sidekiq/blob/master/Ent-Changes.md)
 
 Please see [http://sidekiq.org/](http://sidekiq.org/) for more details and how to buy.
 
-HEAD
+3.5.3
 ---------
 
+- Restore error check for super\_fetch's job ack [#3601]
+- Trim error messages saved in Batch's failure hash, preventing huge
+  messages from bloating Redis. [#3570]
+
+3.5.2
+---------
+
+- Fix `Status#completed?` when run against a Batch that had succeeded
+  and was deleted. [#3519]
+
+3.5.1
+---------
+
+- Work with Sidekiq 5.0.2+
+- Improve performance of super\_fetch with weighted queues [#3489]
+
+3.5.0
+---------
+
+- Add queue pause/unpause endpoints for scripting via curl [#3445]
+- Change how super\_fetch names private queues to avoid hostname/queue clashes. [#3443]
+- Re-implement `Sidekiq::Queue#delete_job` to avoid O(n) runtime [#3408]
+- Batch page displays Pending JIDs if less than 10 [#3130]
+- Batch page has a Search button to find associated Retries [#3130]
 - Make Batch UI progress bar more friendly to the colorblind [#3387]
 
 3.4.5

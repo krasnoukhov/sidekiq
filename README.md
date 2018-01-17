@@ -28,13 +28,14 @@ Sidekiq 3.5.1    | 22ms	| 1257 MB | 125 sec | 800 jobs/sec
 Resque 1.25.2    |  -	  | -       | 420 sec | 240 jobs/sec
 DelayedJob 4.1.1 |  -   | -       | 465 sec | 215 jobs/sec
 
+<small>This benchmark can be found in `bin/sidekiqload`.</small>
 
 Requirements
 -----------------
 
-Sidekiq supports CRuby 2.0+ and JRuby 9k.
+Sidekiq supports CRuby 2.2.2+ and JRuby 9k.
 
-All Rails releases >= 3.2 are officially supported.
+All Rails releases >= 4.0 are officially supported.
 
 Redis 2.8 or greater is required.  3.0.3+ is recommended for large
 installations with thousands of worker threads.
@@ -80,7 +81,6 @@ Useful resources:
 
 * Product documentation is in the [wiki](https://github.com/mperham/sidekiq/wiki).
 * Release announcements are made to the [@sidekiq](https://twitter.com/sidekiq) Twitter account.
-* Here's a [Reddit forum](https://reddit.com/r/sidekiq) dedicated to Sidekiq discussion
 * The [Sidekiq tag](https://stackoverflow.com/questions/tagged/sidekiq) on Stack Overflow has lots of useful Q &amp; A.
 
 **No support via Twitter, 140 characters is not enough.**

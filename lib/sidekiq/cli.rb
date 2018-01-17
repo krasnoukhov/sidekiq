@@ -43,6 +43,10 @@ module Sidekiq
       write_pid
     end
 
+    def jruby?
+      defined?(::JRUBY_VERSION)
+    end
+
     # Code within this method is not tested because it alters
     # global process state irreversibly.  PRs which improve the
     # test coverage of Sidekiq::CLI are welcomed.
@@ -51,8 +55,14 @@ module Sidekiq
       print_banner
 
       self_read, self_write = IO.pipe
+      sigs = %w(INT TERM TTIN TSTP)
+      # USR1 and USR2 don't work on the JVM
+      if !jruby?
+        sigs << 'USR1'
+        sigs << 'USR2'
+      end
 
-      %w(INT TERM USR1 USR2 TTIN TSTP).each do |sig|
+      sigs.each do |sig|
         begin
           trap sig do
             self_write.puts(sig)
@@ -70,6 +80,9 @@ module Sidekiq
       # fire startup and start multithreading.
       ver = Sidekiq.redis_info['redis_version']
       raise "You are using Redis v#{ver}, Sidekiq requires Redis v2.8.0 or greater" if ver < '2.8'
+
+      # cache process identity
+      Sidekiq.options[:identity] = identity
 
       # Touch middleware so it isn't lazy loaded by multiple threads, #3043
       Sidekiq.server_middleware
@@ -213,7 +226,6 @@ module Sidekiq
 
       opts[:strict] = true if opts[:strict].nil?
       opts[:concurrency] = Integer(ENV["RAILS_MAX_THREADS"]) if !opts[:concurrency] && ENV["RAILS_MAX_THREADS"]
-      opts[:identity] = identity
 
       options.merge!(opts)
     end
@@ -230,9 +242,7 @@ module Sidekiq
       if File.directory?(options[:require])
         require 'rails'
         if ::Rails::VERSION::MAJOR < 4
-          require 'sidekiq/rails'
-          require File.expand_path("#{options[:require]}/config/environment.rb")
-          ::Rails.application.eager_load!
+          raise "Sidekiq no longer supports this version of Rails"
         elsif ::Rails::VERSION::MAJOR == 4
           # Painful contortions, see 1791 for discussion
           # No autoloading, we want to force eager load for everything.
@@ -243,7 +253,6 @@ module Sidekiq
           require 'sidekiq/rails'
           require File.expand_path("#{options[:require]}/config/environment.rb")
         else
-          # Rails 5+ && development mode, use Reloader
           require 'sidekiq/rails'
           require File.expand_path("#{options[:require]}/config/environment.rb")
         end

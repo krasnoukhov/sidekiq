@@ -55,6 +55,15 @@ module Sidekiq
         yield @server_chain if block_given?
         @server_chain
       end
+
+      def constantize(str)
+        names = str.split('::')
+        names.shift if names.empty? || names.first.empty?
+
+        names.inject(Object) do |constant, name|
+          constant.const_defined?(name) ? constant.const_get(name) : constant.const_missing(name)
+        end
+      end
     end
   end
 
@@ -76,7 +85,7 @@ module Sidekiq
         true
       elsif Sidekiq::Testing.inline?
         payloads.each do |job|
-          klass = job['class'].constantize
+          klass = Sidekiq::Testing.constantize(job['class'])
           job['id'] ||= SecureRandom.hex(12)
           job_hash = Sidekiq.load_json(Sidekiq.dump_json(job))
           klass.process_job(job_hash)
@@ -309,7 +318,7 @@ module Sidekiq
           worker_classes = jobs.map { |job| job["class"] }.uniq
 
           worker_classes.each do |worker_class|
-            worker_class.constantize.drain
+            Sidekiq::Testing.constantize(worker_class).drain
           end
         end
       end
@@ -317,7 +326,7 @@ module Sidekiq
   end
 end
 
-if defined?(::Rails) && ENV['RAILS_ENV'] == 'test'
+if defined?(::Rails) && Rails.respond_to?(:env) && !Rails.env.test?
   puts("**************************************************")
   puts("⛔️ WARNING: Sidekiq testing API enabled, but this is not the test environment.  Your jobs will not go to Redis.")
   puts("**************************************************")

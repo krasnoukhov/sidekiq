@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 require 'sidekiq/util'
 require 'sidekiq/fetch'
+require 'sidekiq/job_logger'
+require 'sidekiq/job_retry'
 require 'thread'
 require 'concurrent/map'
 require 'concurrent/atomic/atomic_fixnum'
@@ -38,7 +40,8 @@ module Sidekiq
       # PATCH: Use centralized strategy fetching
       @strategy = Sidekiq::Fetcher.strategy(mgr.options[:fetch]).new(mgr.options)
       @reloader = Sidekiq.options[:reloader]
-      @executor = Sidekiq.options[:executor]
+      @logging = (mgr.options[:job_logger] || Sidekiq::JobLogger).new
+      @retrier = Sidekiq::JobRetry.new
     end
 
     def terminate(wait=false)
@@ -117,32 +120,56 @@ module Sidekiq
       nil
     end
 
+    def dispatch(job_hash, queue)
+      # since middleware can mutate the job hash
+      # we clone here so we report the original
+      # job structure to the Web UI
+      pristine = cloned(job_hash)
+
+      Sidekiq::Logging.with_job_hash_context(job_hash) do
+        @retrier.global(pristine, queue) do
+          @logging.call(job_hash, queue) do
+            stats(pristine, queue) do
+              # Rails 5 requires a Reloader to wrap code execution.  In order to
+              # constantize the worker and instantiate an instance, we have to call
+              # the Reloader.  It handles code loading, db connection management, etc.
+              # Effectively this block denotes a "unit of work" to Rails.
+              @reloader.call do
+                klass  = constantize(job_hash['class'.freeze])
+                worker = klass.new
+                worker.jid = job_hash['jid'.freeze]
+                @retrier.local(worker, pristine, queue) do
+                  yield worker
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
     def process(work)
       jobstr = work.job
       queue = work.queue_name
 
       ack = false
       begin
-        job_hash = Sidekiq.load_json(jobstr)
-        @reloader.call do
-          klass  = job_hash['class'.freeze].constantize
-          worker = klass.new
-          worker.jid = job_hash['jid'.freeze]
-
-          stats(worker, job_hash, queue) do
-            Sidekiq::Logging.with_context(log_context(job_hash)) do
-              ack = true
-              Sidekiq.server_middleware.invoke(worker, job_hash, queue) do
-                @executor.call do
-                  # Only ack if we either attempted to start this job or
-                  # successfully completed it. This prevents us from
-                  # losing jobs if a middleware raises an exception before yielding
-                  execute_job(worker, cloned(job_hash['args'.freeze]))
-                end
-              end
-            end
-          end
+        # Treat malformed JSON as a special case: job goes straight to the morgue.
+        job_hash = nil
+        begin
+          job_hash = Sidekiq.load_json(jobstr)
+        rescue => ex
+          handle_exception(ex, { :context => "Invalid JSON for job", :jobstr => jobstr })
+          DeadSet.new.kill(jobstr)
           ack = true
+          raise
+        end
+
+        ack = true
+        dispatch(job_hash, queue) do |worker|
+          Sidekiq.server_middleware.invoke(worker, job_hash, queue) do
+            execute_job(worker, cloned(job_hash['args'.freeze]))
+          end
         end
       rescue Sidekiq::Shutdown
         # Had to force kill this job because it didn't finish
@@ -150,18 +177,12 @@ module Sidekiq
         # we didn't properly finish it.
         ack = false
       rescue Exception => ex
-        handle_exception(ex, { :context => "Job raised exception", :job => job_hash, :jobstr => jobstr })
-        raise
+        e = ex.is_a?(::Sidekiq::JobRetry::Skip) && ex.cause ? ex.cause : ex
+        handle_exception(e, { :context => "Job raised exception", :job => job_hash, :jobstr => jobstr })
+        raise e
       ensure
         work.acknowledge if ack
       end
-    end
-
-    # If we're using a wrapper class, like ActiveJob, use the "wrapped"
-    # attribute to expose the underlying thing.
-    def log_context(item)
-      klass = item['wrapped'.freeze] || item['class'.freeze]
-      "#{klass} JID-#{item['jid'.freeze]}#{" BID-#{item['bid'.freeze]}" if item['bid'.freeze]}"
     end
 
     def execute_job(worker, cloned_args)
@@ -176,9 +197,9 @@ module Sidekiq
     PROCESSED = Concurrent::AtomicFixnum.new
     FAILURE = Concurrent::AtomicFixnum.new
 
-    def stats(worker, job_hash, queue)
+    def stats(job_hash, queue)
       tid = thread_identity
-      WORKER_STATE[tid] = {:queue => queue, :payload => cloned(job_hash), :run_at => Time.now.to_i }
+      WORKER_STATE[tid] = {:queue => queue, :payload => job_hash, :run_at => Time.now.to_i }
 
       begin
         yield
@@ -194,8 +215,17 @@ module Sidekiq
     # Deep clone the arguments passed to the worker so that if
     # the job fails, what is pushed back onto Redis hasn't
     # been mutated by the worker.
-    def cloned(ary)
-      Marshal.load(Marshal.dump(ary))
+    def cloned(thing)
+      Marshal.load(Marshal.dump(thing))
+    end
+
+    def constantize(str)
+      names = str.split('::')
+      names.shift if names.empty? || names.first.empty?
+
+      names.inject(Object) do |constant, name|
+        constant.const_defined?(name) ? constant.const_get(name) : constant.const_missing(name)
+      end
     end
 
   end

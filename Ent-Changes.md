@@ -1,7 +1,34 @@
-Sidekiq Enterprise Changelog
-=======================
+# Sidekiq Enterprise Changelog
+
+[Sidekiq Changes](https://github.com/mperham/sidekiq/blob/master/Changes.md) | [Sidekiq Pro Changes](https://github.com/mperham/sidekiq/blob/master/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/mperham/sidekiq/blob/master/Ent-Changes.md)
 
 Please see [http://sidekiq.org/](http://sidekiq.org/) for more details and how to buy.
+
+1.6.1
+-------------
+
+- Fix crash in rate limiter middleware when used with custom exceptions [#3604]
+
+1.6.0
+-------------
+
+- Show process "leader" tag on Busy page, requires Sidekiq 5.0.2 [#2867]
+- Capture custom metrics with the `save_history` API. [#2815]
+- Implement new `unique_until: 'start'` policy option. [#3471]
+
+1.5.4
+-------------
+
+- Fix broken Cron page in Web UI [#3458]
+
+1.5.3
+-------------
+
+- Remove dependency on the algorithms gem [#3446]
+- Allow user to specify max memory in megabytes with SIDEKIQ\_MAXMEM\_MB [#3451]
+- Implement logic to detect app startup failure, sidekiqswarm will exit
+  rather than try to restart the app forever [#3450]
+- Another fix for doubly-encrypted arguments [#3368]
 
 1.5.2
 -------------

@@ -1,6 +1,66 @@
 # Sidekiq Changes
 
+[Sidekiq Changes](https://github.com/mperham/sidekiq/blob/master/Changes.md) | [Sidekiq Pro Changes](https://github.com/mperham/sidekiq/blob/master/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/mperham/sidekiq/blob/master/Ent-Changes.md)
+
 HEAD
+-----------
+
+- Update gemspec to allow newer versions of the Redis gem [#3617]
+- Refactor Worker.set so it can be memoized [#3602]
+- Fix display of Redis URL in web footer, broken in 5.0.3 [#3560]
+
+5.0.4
+-----------
+
+- Fix "slow startup" performance regression from 5.0.2. [#3525]
+- Allow users to disable ID generation since some redis providers disable the CLIENT command. [#3521]
+
+5.0.3
+-----------
+
+- Fix overriding `class_attribute` core extension from ActiveSupport with Sidekiq one [PikachuEXE, #3499]
+- Allow job logger to be overridden [AlfonsoUceda, #3502]
+- Set a default Redis client identifier for debugging [#3516]
+- Fix "Uninitialized constant" errors on startup with the delayed extensions [#3509]
+
+5.0.2
+-----------
+
+- fix broken release, thanks @nateberkopec
+
+5.0.1
+-----------
+
+- Fix incorrect server identity when daemonizing [jwilm, #3496]
+- Work around error running Web UI against Redis Cluster [#3492]
+- Remove core extensions, Sidekiq is now monkeypatch-free! [#3474]
+- Reimplement Web UI's HTTP\_ACCEPT\_LANGUAGE parsing because the spec is utterly
+  incomprehensible for various edge cases. [johanlunds, natematykiewicz, #3449]
+- Update `class_attribute` core extension to avoid warnings
+- Expose `job_hash_context` from `Sidekiq::Logging` to support log customization
+
+5.0.0
+-----------
+
+- **BREAKING CHANGE** Job dispatch was refactored for safer integration with
+  Rails 5.  The **Logging** and **RetryJobs** server middleware were removed and
+  functionality integrated directly into Sidekiq::Processor.  These aren't
+  commonly used public APIs so this shouldn't impact most users.
+```
+Sidekiq::Middleware::Server::RetryJobs -> Sidekiq::JobRetry
+Sidekiq::Middleware::Server::Logging -> Sidekiq::JobLogger
+```
+- Quieting Sidekiq is now done via the TSTP signal, the USR1 signal is deprecated.
+- The `delay` extension APIs are no longer available by default, you
+  must opt into them.
+- The Web UI is now BiDi and can render RTL languages like Arabic, Farsi and Hebrew.
+- Rails 3.2 and Ruby 2.0 and 2.1 are no longer supported.
+- The `SomeWorker.set(options)` API was re-written to avoid thread-local state. [#2152]
+- Sidekiq Enterprise's encrypted jobs now display "[encrypted data]" in the Web UI instead
+  of random hex bytes.
+- Please see the [5.0 Upgrade notes](5.0-Upgrade.md) for more detail.
+
+4.2.10
 -----------
 
 - Scheduled jobs can now be moved directly to the Dead queue via API [#3390]

@@ -1,17 +1,18 @@
 # encoding: utf-8
 # frozen_string_literal: true
 require 'sidekiq/version'
-fail "Sidekiq #{Sidekiq::VERSION} does not support Ruby versions below 2.0.0." if RUBY_PLATFORM != 'java' && RUBY_VERSION < '2.0.0'
+fail "Sidekiq #{Sidekiq::VERSION} does not support Ruby versions below 2.2.2." if RUBY_PLATFORM != 'java' && RUBY_VERSION < '2.2.2'
 
 require 'sidekiq/logging'
 require 'sidekiq/client'
 require 'sidekiq/worker'
 require 'sidekiq/redis_connection'
+require 'sidekiq/delay'
 
 require 'json'
 
 module Sidekiq
-  NAME = 'Sidekiq'
+  NAME = 'Sidekiq'.freeze
   LICENSE = 'See LICENSE and the LGPL-3.0 for licensing details.'
 
   DEFAULTS = {
@@ -33,7 +34,6 @@ module Sidekiq
     dead_max_jobs: 10_000,
     dead_timeout_in_seconds: 180 * 24 * 60 * 60, # 6 months
     reloader: proc { |&block| block.call },
-    executor: proc { |&block| block.call },
   }
 
   DEFAULT_WORKER_OPTIONS = {
@@ -145,17 +145,12 @@ module Sidekiq
   end
 
   def self.default_server_middleware
-    require 'sidekiq/middleware/server/retry_jobs'
-    require 'sidekiq/middleware/server/logging'
-
-    Middleware::Chain.new do |m|
-      m.add Middleware::Server::RetryJobs
-      m.add Middleware::Server::Logging
-    end
+    Middleware::Chain.new
   end
 
   def self.default_worker_options=(hash)
-    @default_worker_options = default_worker_options.merge(hash.stringify_keys)
+    # stringify
+    @default_worker_options = default_worker_options.merge(Hash[hash.map{|k, v| [k.to_s, v]}])
   end
   def self.default_worker_options
     defined?(@default_worker_options) ? @default_worker_options : DEFAULT_WORKER_OPTIONS
@@ -228,10 +223,6 @@ module Sidekiq
   # otherwise Ruby's Thread#kill will commit.  See #377.
   # DO NOT RESCUE THIS ERROR IN YOUR WORKERS
   class Shutdown < Interrupt; end
-
 end
 
-require 'sidekiq/extensions/class_methods'
-require 'sidekiq/extensions/action_mailer'
-require 'sidekiq/extensions/active_record'
 require 'sidekiq/rails' if defined?(::Rails::Engine)

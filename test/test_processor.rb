@@ -14,13 +14,14 @@ class TestProcessor < Sidekiq::Test
       @mgr = Minitest::Mock.new
       @mgr.expect(:options, {:queues => ['default']})
       @mgr.expect(:options, {:queues => ['default']})
+      @mgr.expect(:options, {:queues => ['default']})
       @processor = ::Sidekiq::Processor.new(@mgr)
     end
 
     class MockWorker
       include Sidekiq::Worker
       def perform(args)
-        raise TEST_EXCEPTION if args == 'boom'
+        raise TEST_EXCEPTION if args.to_s == 'boom'
         args.pop if args.is_a? Array
         $invokes += 1
       end
@@ -81,8 +82,24 @@ class TestProcessor < Sidekiq::Test
         Sidekiq.error_handlers.pop
       end
 
-      it 'handles exceptions raised by the job' do
+      it 'handles invalid JSON' do
+        ds = Sidekiq::DeadSet.new
+        ds.clear
         job_hash = { 'class' => MockWorker.to_s, 'args' => ['boom'] }
+        msg = Sidekiq.dump_json(job_hash)
+        job = work(msg[0...-2])
+        ds = Sidekiq::DeadSet.new
+        assert_equal 0, ds.size
+        begin
+          @processor.instance_variable_set(:'@job', job)
+          @processor.process(job)
+        rescue JSON::ParserError
+        end
+        assert_equal 1, ds.size
+      end
+
+      it 'handles exceptions raised by the job' do
+        job_hash = { 'class' => MockWorker.to_s, 'args' => ['boom'], 'jid' => '123987123' }
         msg = Sidekiq.dump_json(job_hash)
         job = work(msg)
         begin
@@ -93,7 +110,7 @@ class TestProcessor < Sidekiq::Test
         assert_equal 1, errors.count
         assert_instance_of TestException, errors.first[:exception]
         assert_equal msg, errors.first[:context][:jobstr]
-        assert_equal job_hash, errors.first[:context][:job]
+        assert_equal job_hash['jid'], errors.first[:context][:job]['jid']
       end
 
       it 'handles exceptions raised by the reloader' do
@@ -207,6 +224,67 @@ class TestProcessor < Sidekiq::Test
       end
     end
 
+    describe 'retry' do
+      class ArgsMutatingServerMiddleware
+        def call(worker, item, queue)
+          item['args'] = item['args'].map do |arg|
+            arg.to_sym if arg.is_a?(String)
+          end
+          yield
+        end
+      end
+
+      class ArgsMutatingClientMiddleware
+        def call(worker, item, queue, redis_pool)
+          item['args'] = item['args'].map do |arg|
+            arg.to_s if arg.is_a?(Symbol)
+          end
+          yield
+        end
+      end
+
+      before do
+        Sidekiq.server_middleware do |chain|
+          chain.prepend ArgsMutatingServerMiddleware
+        end
+        Sidekiq.client_middleware do |chain|
+          chain.prepend ArgsMutatingClientMiddleware
+        end
+      end
+
+      after do
+        Sidekiq.server_middleware do |chain|
+          chain.remove ArgsMutatingServerMiddleware
+        end
+        Sidekiq.client_middleware do |chain|
+          chain.remove ArgsMutatingClientMiddleware
+        end
+      end
+
+      describe 'middleware mutates the job args and then fails' do
+        it 'requeues with original arguments' do
+          job_data = { 'class' => MockWorker.to_s, 'args' => ['boom'] }
+
+          retry_stub_called = false
+          retry_stub = lambda { |worker, msg, queue, exception|
+            retry_stub_called = true
+            assert_equal 'boom', msg['args'].first
+          }
+
+          @processor.instance_variable_get('@retrier').stub(:attempt_retry, retry_stub) do
+            msg = Sidekiq.dump_json(job_data)
+            begin
+              @processor.process(work(msg))
+              flunk "Expected exception"
+            rescue TestException
+            end
+          end
+
+          assert retry_stub_called
+        end
+      end
+    end
+
     describe 'stats' do
       before do
         Sidekiq.redis {|c| c.flushdb }
@@ -244,6 +322,31 @@ class TestProcessor < Sidekiq::Test
           failed_job
           assert_equal 1, Sidekiq::Processor::FAILURE.value
         end
+      end
+    end
+
+    describe 'custom job logger class' do
+      class CustomJobLogger
+        def call(item, queue)
+          yield
+        rescue Exception
+          raise
+        end
+      end
+
+      before do
+        @mgr = Minitest::Mock.new
+        @mgr.expect(:options, {:queues => ['default'], :job_logger => CustomJobLogger})
+        @mgr.expect(:options, {:queues => ['default'], :job_logger => CustomJobLogger})
+        @mgr.expect(:options, {:queues => ['default'], :job_logger => CustomJobLogger})
+        @processor = ::Sidekiq::Processor.new(@mgr)
+      end
+
+      it 'is called instead default Sidekiq::JobLogger' do
+        msg = Sidekiq.dump_json({ 'class' => MockWorker.to_s, 'args' => ['myarg'] })
+        @processor.process(work(msg))
+        assert_equal 1, $invokes
+        @mgr.verify
       end
     end
   end
