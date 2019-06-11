@@ -167,10 +167,10 @@ module Sidekiq
   class ScheduleFetch
     ZPOP = <<-LUA
       local val = redis.call('zrangebyscore', KEYS[1], '-inf', KEYS[2], 'LIMIT', 0, 1)
-      if val then redis.call('zrem', KEYS[1], val[1]) end
+      if val and val[1] then redis.call('zrem', KEYS[1], val[1]) end
       return val[1]
     LUA
-    
+
     def initialize(options)
       @queues = %w(schedule)
     end
@@ -180,16 +180,16 @@ module Sidekiq
         sorted_set = @queues.sample
         namespace = conn.namespace
         now = Time.now.to_f.to_s
-        
+
         message = conn.eval(ZPOP, ["#{namespace}:#{sorted_set}", now], {})
         if message
           msg = Sidekiq.load_json(message)
-          
+
           # Keep message in schedule
           if sorted_set == 'schedule'
             conn.zadd('schedule', (Time.new + msg['expiration']).to_f.to_s, message)
           end
-          
+
           ["queue:#{msg['queue']}", message]
         end
       }
